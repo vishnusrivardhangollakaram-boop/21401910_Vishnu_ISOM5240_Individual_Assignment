@@ -1,0 +1,19 @@
+# TaleTwinkle runtime dependencies.
+# Every direct dependency has both a minimum tested feature level and an upper
+# compatibility boundary so Streamlit Cloud cannot silently install a breaking major release.
+
+streamlit>=1.49.0,<2.0.0
+transformers>=4.57.0,<5.0.0
+torch>=2.8.0,<2.15.0
+torchvision>=0.23.0,<0.30.0
+Pillow>=11.3.0,<13.0.0
+numpy>=2.0.0,<3.0.0
+scipy>=1.15.0,<2.0.0
+soundfile>=0.13.1,<0.15.0
+librosa>=0.11.0,<0.12.0
+sentencepiece>=0.2.0,<0.3.0
+safetensors>=0.5.3,<1.0.0
+protobuf>=5.29.0,<7.0.0
+pandas>=2.2.0,<3.0.0
+pytest>=8.3.0,<9.0.0
+requests>=2.32.0,<3.0.0
