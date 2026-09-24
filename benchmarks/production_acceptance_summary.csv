@@ -1,0 +1,2 @@
+test_images,functionality_pass_percent,mean_concept_recall_percent,cold_first_run_seconds,warm_mean_caption_seconds,warm_mean_story_seconds,warm_mean_audio_seconds,warm_mean_total_seconds,warm_max_total_seconds
+10,100.0,31.666666666666664,17.819207715998346,0.5698340571113173,0.7777143837778971,3.400968231888732,4.748517660666847,5.496012007999525
