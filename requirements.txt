@@ -1,19 +1,26 @@
-# TaleTwinkle runtime dependencies.
-# Every direct dependency has both a minimum tested feature level and an upper
-# compatibility boundary so Streamlit Cloud cannot silently install a breaking major release.
+# TaleTwinkle - Python packages for Streamlit Cloud (minimum and maximum compatible versions)
 
-streamlit>=1.49.0,<2.0.0
-transformers>=4.57.0,<5.0.0
-torch>=2.8.0,<2.15.0
-torchvision>=0.23.0,<0.30.0
-Pillow>=11.3.0,<13.0.0
-numpy>=2.0.0,<3.0.0
-scipy>=1.15.0,<2.0.0
-soundfile>=0.13.1,<0.15.0
-librosa>=0.11.0,<0.12.0
-sentencepiece>=0.2.0,<0.3.0
-safetensors>=0.5.3,<1.0.0
-protobuf>=5.29.0,<7.0.0
-pandas>=2.2.0,<3.0.0
-pytest>=8.3.0,<9.0.0
-requests>=2.32.0,<3.0.0
+# Web app framework (st.write_stream, st.audio autoplay and bordered layouts need >= 1.40)
+streamlit>=1.40.0,<2.0.0
+
+# Hugging Face pipelines (course rule: stay below Transformers 5.0)
+transformers>=4.45.0,<5.0.0
+tokenizers>=0.20.0,<1.0.0
+huggingface_hub>=0.24.0,<1.0.0
+safetensors>=0.4.1,<1.0.0
+accelerate>=0.34.0,<2.0.0
+
+# Deep learning engine (CPU). Kept below 2.10 so PyTorch's int8 dynamic quantization is available.
+torch>=2.2.0,<2.10.0
+
+# Pictures
+Pillow>=10.0.0,<12.0.0
+
+# Numbers and audio processing (voice speed, cartoon voices, joining sentences)
+numpy>=1.26.0,<3.0.0
+scipy>=1.13.0,<2.0.0
+soundfile>=0.12.1,<1.0.0
+
+# Real UK / US / Australian / Indian English voices (gTTS is named in the assignment brief)
+gTTS>=2.5.0,<3.0.0
+requests>=2.31.0,<3.0.0

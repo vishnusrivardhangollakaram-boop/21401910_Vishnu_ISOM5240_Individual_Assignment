@@ -1,256 +1,203 @@
-# TaleTwinkle — Picture to Story
+# ✨ TaleTwinkle Picture Stories for Kids
 
-TaleTwinkle is a child-friendly Streamlit application for ages 3–10. A child drops in one image and the app automatically:
+**ISOM5240 Deep Learning Business Applications with Python: Individual Assignment**
+Storytelling application using Hugging Face Transformers pipelines, deployed on Streamlit Cloud.
 
-1. resizes and captions the image;
-2. creates a safe 50–100-word themed story;
-3. narrates it with a selected playful voice persona; and
-4. mixes quiet theme music beneath the narration, then lets the music continue for five seconds.
+> 🔗 **Live app:** `https://<your-app-name>.streamlit.app` ← *replace with your Streamlit Cloud URL*
+> 📦 **Files:** `app.py` · `requirements.txt` · `packages.txt` · `.streamlit/config.toml` · `assets/backgrounds/` · `test_images/` · `benchmark/` · `tests/`
 
-The interface requires no generation button. Uploading a new picture replaces the current picture, story, and narration.
+A child (aged 3–10) drops a picture onto the screen. TaleTwinkle shows the picture, describes it, writes a short story
+about it **word by word on screen** in the chosen story world, and reads it aloud in the chosen storyteller voice.
+No button needs to be pressed.
 
-## Assignment fit
+---
 
-| Requirement | TaleTwinkle implementation | Verification |
+## 1. Business and user requirements
+
+| Requirement (brief + class) | How TaleTwinkle meets it |
+|---|---|
+| Python app using Hugging Face **Transformers pipelines** | `pipeline("image-to-text")` → `pipeline("text-generation")` → speech: gTTS (named in the brief) + Hugging Face `pipeline("text-to-speech")` |
+| **Image input** uploaded by the user | Big drag-and-drop / tap-to-choose box in the centre (JPG, JPEG, PNG, WEBP) |
+| **Story of 50–100 words** from details in the image | An instruction-following model gets the caption, theme and length. Output is trimmed to whole sentences within 50–100 words; the **slider** sets the length (default 75) |
+| **Text-to-speech** | Narration plays automatically: 5 real voices + 4 cartoon characters, speed 0.5×–2× |
+| **Deployed on Streamlit Cloud** | Public app, `app.py` + `requirements.txt` in a GitHub repo |
+| **Users are 3–10 years old** | No button needed; big fonts; illustrated worlds; simple words; kid-safety filter; the picture, story and audio player are always on screen |
+| **Short attention span → fast** | Models load and warm up once at start-up; int8 models; the story streams word by word; generation stops once the story is long enough; each sentence is voiced **while the rest is still being written** |
+| Picture must be shown | The picture appears first, scaled to **460 px** on the longest side (small pictures scaled up, big pictures scaled down) |
+| Accent for Hong Kong children | Default voice: **Story Lady Lily**, a real British female voice |
+
+## 2. Features
+
+| Area | What the child sees |
+|---|---|
+| **Centre** | 📸 Drop-a-picture box → the picture → 📖 the story, appearing word by word → 🎧 narration that plays by itself (the player shows **pause** while playing and **play** after it ends) → 🔄 *Tell me another story!* |
+| **Left: story worlds** | 🏰 Fairy Tale · 🚀 Space Quest · 🔎 Gentle Mystery · 🦜 Jungle Adventure · 🎵 Silly Poem · 🐠 Ocean Magic. Each changes the **illustrated background, floating emojis, mascot and story style** |
+| **Right: controls** | 📏 Story size (50–100 words, default 75) · 🐢 Voice speed 🐇 (0.5×–2×, default 1×) · 🗣️ Storyteller voice with an animated avatar |
+| **Voices** | 👩‍🏫 Story Lady Lily (British, default) · 🦜 Polly the Parrot · 🐱 Whiskers the Kitten · 👩 Aunt Amy (American) · 👩 Aunty Chloe (Australian) · 👩‍🏫 Teacher Priya (Indian English) · 👨 Uncle Max (man's voice) · 🐻 Bruno the Bear · 🤖 Robo Beep |
+| **Before a picture** | A friendly greeting from the chosen storyteller (press ▶ to hear each voice) |
+| **Celebration** | 🎈 balloons when a story is ready |
+| **For grown-ups** | Expandable panel: timings for every stage (2 decimals), the caption, the models used and their precision, download buttons for the story text and audio |
+| **Never breaks** | Friendly message for bad files. Safe backup story if the story model fails or writes something unsuitable. Local Hugging Face voice if Google TTS is unreachable |
+
+## 3. How it works
+
+```
+picture ─► [1] image-to-text ─► caption ─► [2] text-generation (streamed) ─► 50-100 word story ─► [3] voice ─► autoplay
+           blip-image-captioning-base       Qwen2.5-0.5B-Instruct                                   gTTS / mms-tts-eng
+           int8, repetition-controlled      int8, theme + length prompt,        each finished sentence is sent to
+                                            early stop, trim + safety check     the voice engine in the background
+```
+
+**Why the speech is almost instant:** as soon as a sentence is finished on screen, it is sent to the voice engine in a
+background thread. Google voices for several sentences are requested in parallel. By the time the last sentence is written,
+most of the narration already exists. The sentences are then joined, the character effect and speed are applied, and the audio plays.
+
+**Voices:** Lily, Amy, Chloe and Priya are **real, unaltered** Google voices (UK, US, AU and Indian English).
+Uncle Max is the **real** male voice of `facebook/mms-tts-eng`. Only the cartoon characters (parrot, kitten, bear, robot)
+use pitch/tempo effects, and they are meant to sound like cartoons. The speed slider uses WSOLA time-stretching,
+so **speed changes do not change the pitch**.
+
+## 4. Model selection: 10 candidates per stage
+
+Every candidate has a Hugging Face **model card** and a **"Use this model → Transformers"** snippet, and fits the task.
+All tests use the **same 10 test images** in `test_images/` (6 illustrated worlds + 4 photos, with expected objects in
+`test_image_ground_truth.csv`), on **CPU**, as on Streamlit Cloud.
+
+### 4.1 Image captioning: speed and accuracy (`benchmark/run1_initial_screening/`)
+Accuracy = % of expected objects named in the caption. Overall = 70 % accuracy (relative to best) + 30 % speed (relative to fastest).
+
+| Rank | Model | Accuracy % | Seconds / image | Overall |
+|---|---|---|---|---|
+| 1 | `Salesforce/blip-image-captioning-base` ✅ | 29.17 | 0.55 | 76.08 |
+| 2 | `microsoft/git-base-textcaps` | 35.83 | 2.78 | 73.80 |
+| 3 | `Salesforce/blip-image-captioning-large` | 34.17 | 1.74 | 72.82 |
+| 4 | `microsoft/git-base-coco` | 32.50 | 1.79 | 69.39 |
+| 5 | `ydshieh/vit-gpt2-coco-en` | 18.33 | 0.35 | 65.81 |
+| 6 | `microsoft/git-large-textcaps` | 30.83 | 9.47 | 61.35 |
+| 7 | `nlpconnect/vit-gpt2-image-captioning` | 18.33 | 0.54 | 55.47 |
+| 8 | `microsoft/git-base` | 22.50 | 2.50 | 48.18 |
+| 9 | `microsoft/git-large-coco` | 21.67 | 7.02 | 43.83 |
+| 10 | `microsoft/git-large` | 12.50 | 6.51 | 26.04 |
+
+**Choice:** BLIP-base, the best accuracy for its speed (3–5× faster than the more accurate models). Its known weaknesses
+(word loops such as "jungle jungle jungle", and words like "painting of" or "illustration") are fixed with
+`repetition_penalty` / `no_repeat_ngram_size` and a caption-cleaning function.
+
+### 4.2 Story generation: image relevance and kid suitability by theme
+**Run 1 (`benchmark/run1_initial_screening/`)** tested small story models that do **not** follow instructions:
+
+| Rank | Model | Overall % | Image relevance % | Theme match % | Mean words | Seconds |
+|---|---|---|---|---|---|---|
+| 1 | `google/flan-t5-base` | 48.42 | 21.67 | 45.00 | 85.90 | 4.49 |
+| 2 | `google/flan-t5-small` | 42.19 | 18.33 | 30.00 | 88.00 | 1.60 |
+| 3 | `roneneldan/TinyStories-Instruct-28M` | 37.56 | 6.67 | 10.00 | 74.60 | 0.72 |
+| 5 | `roneneldan/TinyStories-33M` | 32.44 | 3.33 | 0.00 | 21.80 | 0.33 |
+| … | 6 more TinyStories / distilgpt2 variants | ≤ 31.66 | ≤ 5.83 | ≤ 10.00 | | |
+
+**Finding:** these models ignore the picture (image relevance ≤ 22 %) and the theme. FLAN-T5 repeats sentences. Using them
+needs a hard-coded opening such as *"Once upon a time, the picture came alive: …"* plus ready-made filler sentences,
+so every story sounds the same. **Decision:** switch to **instruction-tuned chat models**, which follow the prompt
+(picture + theme + length + kid-safe style).
+
+**Run 2 (`benchmark/TaleTwinkle_Model_Benchmark.ipynb`)** compares 10 candidates with the app's exact prompt and int8 setting:
+Qwen2.5-0.5B/1.5B-Instruct, SmolLM2-135M/360M/1.7B-Instruct, TinyLlama-1.1B-Chat, FLAN-T5 base/small, TinyStories-33M and
+TinyStories-Instruct-33M. Kids story score = 35 % image relevance + 25 % theme match + 20 % reading level + 10 % safety + 10 % length.
+
+| Rank | Model | Kids score | Relevance % | Theme % | Reading grade | Length OK % | Seconds / story | Overall |
+|---|---|---|---|---|---|---|---|---|
+| ⏳ | *Run 2 results are added here from `benchmark_results.xlsx`* | | | | | | | |
+
+**Choice:** `Qwen/Qwen2.5-0.5B-Instruct`, the smallest model that reliably follows the picture, theme and length instructions
+and fits Streamlit Cloud's memory in int8 (about 0.6 GB).
+
+### 4.3 Text-to-speech: audio quality
+| Engine | Voices | Quality | Speed | Decision |
+|---|---|---|---|---|
+| **gTTS** (`co.uk`, `us`, `com.au`, `co.in`) | Real female UK, US, AU, Indian English | Natural | ~1 s (parallel sentences) | ✅ Lily (default), Amy, Chloe, Priya, cartoon voices |
+| **`facebook/mms-tts-eng`** | One real male voice | Clear | Fast, local | ✅ Uncle Max, Bruno; offline backup |
+| `microsoft/speecht5_tts` | x-vector speakers | Good | Slower, needs speaker embeddings | ✗ |
+| `suno/bark-small` | Expressive presets | Very good | Far too slow on CPU | ✗ |
+| `hexgrad/Kokoro-82M` | US/UK male + female | Very good | Moderate | ✗ not a Transformers pipeline; extra system packages |
+| `kakao-enterprise/vits-ljs` | One US female | Good | Fast | ✗ one voice only |
+| `espnet/kan-bayashi_ljspeech_vits`, `facebook/fastspeech2-en-ljspeech` | One voice | Good | Medium | ✗ heavy frameworks |
+| `pyttsx3` | System voices | Robotic | Fast | ✗ |
+| *Pitch-shifted MMS personas (earlier prototype)* | 21 "voices" from one male voice | Poor, unnatural | | ✗ replaced by real voices |
+
+Intelligibility (Whisper word error rate) and speed for these engines are measured in stage 3 of the notebook.
+
+## 5. Performance on Streamlit Cloud
+The label under the story shows *"ready in X s"*, and *For grown-ups* shows every stage. Measured on the deployed app:
+
+| Test picture | Theme / words | Picture → words (s) | First story words (s) | Whole story (s) | Voice ready (s) |
+|---|---|---|---|---|---|
+| ⏳ | | | | | |
+
+## 6. Testing
+### 6.1 Automated offline tests: `python tests/run_offline_tests.py` (43 / 43 passed)
+Stand-ins for Streamlit, Transformers, torch and gTTS (`tests/stubs/`) run every function and the whole screen flow without
+downloading models. Full table: `tests/offline_test_results.md`. Highlights:
+
+| Area | Checks (all ✅) |
+|---|---|
+| Pictures | Small pictures scaled up (120×80 → 460×307), large scaled down (4000×3000 → 460×345), transparent PNG on white |
+| Captions | "jungle jungle jungle…" → "jungle"; "underwater background with corals" → "underwater with corals"; "illustration" / "painting of" removed |
+| Story | Trimmed to 53 / 80 / 93 words for slider 50 / 75 / 100, ending on a full sentence; poem line breaks kept; unsafe words blocked; backup story is safe and has no fixed opening |
+| Speed features | Sentences queued for speech while writing (first sentence voiced 0.94 s before the story ended); **early stop: 87 words generated instead of 360**; models shrunk to int8 |
+| Voices | 0.5× / 2× speed keep pitch at 220.00 Hz; parrot 311.00 Hz (expected 311.13); bear 179.50 Hz (expected 179.73); default is the real British lady; order Lily → Parrot → Kitten |
+| Screen flow | Placeholders + greeting player before upload; story card shown **before** the audio; narration autoplays; voice change re-records audio only; theme change writes a new story; no music anywhere |
+| Never breaks | Bad file → friendly error; story crash → backup story; unsafe story → backup; Google TTS offline → Hugging Face voice |
+
+### 6.2 Manual functional test on the deployed app
+| # | Check | Result |
 |---|---|---|
-| Image upload | Central drag-and-drop JPG, PNG, or WebP uploader | Tested with 10 images |
-| Image-to-text | `Salesforce/blip-image-captioning-base` | 10-model × 10-image benchmark |
-| Story generation | `roneneldan/TinyStories-33M` plus safety and length controls | 10-model × 10-caption benchmark and final acceptance test |
-| 50–100 words | Slider from 50 to 100, default 75 | Exact word-count unit and acceptance tests |
-| Text-to-speech | Local `facebook/mms-tts-eng` Hugging Face model | Ten-persona technical audio benchmark |
-| Theme choice | Fairy Tale, Space Quest, Gentle Mystery, Jungle Adventure, Silly Poem, Ocean Magic | Six original backgrounds and six original music loops |
-| Voice speed | 0.50×–2.00×, default 1.00× | Function and UI tests |
-| Voice choices | Luna, Polly, Tom, then region-inspired lady/man/grandparent/child styles | 21 choices in the dropdown |
-| Automatic flow | Upload immediately starts caption → story → speech | Production acceptance test |
-| Image scaling | EXIF correction, RGB conversion, 1024-pixel maximum edge | Unit tested |
-| Persistent output | Image, story card, and audio player remain on screen | Streamlit flow |
-| Child suitability | Blocked-term gate, repetition cleanup, happy theme endings | 100% safety pass on final 10-image test |
-| Code quality | Functions, docstrings, meaningful names, section comments, `main()` | Eight automated tests |
+| 1 | App opens; placeholders, 6 worlds, sliders, voice list and greeting player visible | ⏳ |
+| 2 | Drop a picture → picture at preferred size, story appears word by word, narration starts by itself | ⏳ |
+| 3 | Story is 50–100 words, simple, about the picture, and in the chosen world's style | ⏳ |
+| 4 | Story size 50 / 75 / 100 → matching lengths | ⏳ |
+| 5 | Each world changes the background, emojis, mascot and story style | ⏳ |
+| 6 | Voice speed 0.5× and 2× → slower / faster, same pitch | ⏳ |
+| 7 | All 9 voices work; Lily is a female British voice | ⏳ |
+| 8 | Player shows pause while playing and play after it ends | ⏳ |
+| 9 | "Tell me another story!" → new story for the same picture | ⏳ |
+| 10 | Non-picture file → friendly message, no crash | ⏳ |
+| 11 | Works on phone / tablet | ⏳ |
 
-## Business and user requirements
+## 7. Code structure (course conventions)
+* **IMPORT PART** (imports, settings, model names, themes, voices) · **FUNCTION PART** (52 functions, each with a docstring,
+  grouped into page, models, picture, Stage 1, Stage 2, Stage 3, full run and screen) · **MAIN PART**
+  (`def main()` with **INPUT / PROCESS / OUTPUT** sub-sections, started by `if __name__ == "__main__": main()`).
+* No classes. Every function is called with **keyword arguments** (`parameter=argument`). **f-strings** everywhere, with times shown to **`.2f`**.
+* Descriptive variable names (`uploaded_picture_file`, `target_word_count`, `queue_sentence_for_speech`, ...).
 
-### Business requirements
-
-- Deliver the assignment’s full image-to-story-to-speech pipeline in one deployable Python application.
-- Use relevant Hugging Face pretrained models with public model cards and documented inference instructions.
-- Balance content relevance, child suitability, response time, model memory, and Streamlit Cloud compatibility.
-- Provide reproducible comparison evidence rather than selecting models by popularity alone.
-- Keep the code readable for assessment: no custom classes, small functions, docstrings, clear variables, comments, and an explicit `main()` entry point.
-
-### User requirements
-
-- A child with little technical knowledge can upload one picture and receive a result without pressing another button.
-- Children can choose a world, story length, voice speed, and voice friend using simple controls.
-- The screen stays colorful and active with theme imagery and quiet music while work is happening.
-- Stories remain between 50 and 100 words and end positively.
-- Children can pause, replay, or adjust the generated narration with the standard audio player.
-- A new upload replaces the old result.
-
-## Selected models
-
-### 1. Image captioning: BLIP Base
-
-- Model: [`Salesforce/blip-image-captioning-base`](https://huggingface.co/Salesforce/blip-image-captioning-base)
-- Hugging Face task: image-to-text
-- Why selected: 0.55-second measured mean inference, stable captions, standard Transformers pipeline, and a realistic memory footprint for Community Cloud.
-- Trade-off: GIT Base TextCaps scored higher on keyword recall (35.83% versus 29.17%) but was about five times slower and produced occasional text-related hallucinations. BLIP Large scored 34.17% but has a much larger memory footprint.
-
-### 2. Story generation: TinyStories-33M
-
-- Model: [`roneneldan/TinyStories-33M`](https://huggingface.co/roneneldan/TinyStories-33M)
-- Hugging Face task: text generation
-- Why selected: trained specifically on short simple stories, MIT licensed, public model card, standard Transformers inference, small enough for Streamlit Cloud, and sub-second warm generation after prompt and safety improvements.
-- Trade-off: FLAN-T5 achieved the best raw automated score, but manual inspection found severe repeated phrases. The production pipeline therefore uses the child-domain model with image-grounded openings, repetition removal, a frightening-word gate, exact-length fitting, and positive endings.
-
-### 3. Text-to-speech: MMS English
-
-- Model: [`facebook/mms-tts-eng`](https://huggingface.co/facebook/mms-tts-eng)
-- Hugging Face task: text-to-speech
-- Why selected: local inference, small VITS architecture, standard Transformers pipeline, good intelligibility, and no disclosure of a child’s generated story to an external speech service.
-- Trade-off: one English base speaker is transformed through pitch and pace effects. Region labels are child-facing character inspiration; they are not guaranteed accents or literal demographic speakers.
-
-## Model-comparison results
-
-The detailed rows, every generated caption/story, failures, runtime, and scoring inputs are in [`benchmarks/`](benchmarks/).
-
-### Image-caption candidates — 10 models × 10 images
-
-| Rank | Candidate | Concept recall | Mean time |
-|---:|---|---:|---:|
-| 1 | microsoft/git-base-textcaps | 35.83% | 2.78 s |
-| 2 | Salesforce/blip-image-captioning-large | 34.17% | 1.74 s |
-| 3 | microsoft/git-base-coco | 32.50% | 1.79 s |
-| 4 | microsoft/git-large-textcaps | 30.83% | 9.47 s |
-| **5** | **Salesforce/blip-image-captioning-base — selected** | **29.17%** | **0.55 s** |
-| 6 | microsoft/git-base | 22.50% | 2.50 s |
-| 7 | microsoft/git-large-coco | 21.67% | 7.02 s |
-| 8 | ydshieh/vit-gpt2-coco-en | 18.33% | 0.35 s |
-| 9 | nlpconnect/vit-gpt2-image-captioning | 18.33% | 0.54 s |
-| 10 | microsoft/git-large | 12.50% | 6.51 s |
-
-The selected model is not the highest raw recall. It is the best deployment balance: its recall is within 6.66 percentage points of the top model while its measured inference is about 5× faster.
-
-### Raw story candidates — 10 models × 10 captions
-
-| Rank | Candidate | Automated score | Mean time | Manual judgement |
-|---:|---|---:|---:|---|
-| 1 | google/flan-t5-base | 0.484 | 4.49 s | Repetitive; too slow and large |
-| 2 | google/flan-t5-small | 0.422 | 1.60 s | Severe repeated phrases |
-| 3 | TinyStories-Instruct-28M | 0.376 | 0.72 s | Fast but inconsistent and sometimes tense |
-| 4 | TinyStories-1M | 0.350 | 0.30 s | Too little image/theme control |
-| **5** | **TinyStories-33M — selected after production safeguards** | **0.324** | **0.33 s raw** | **Best child-domain/speed/deployment balance** |
-| 6 | TinyStories-Instruct-1M | 0.317 | 0.28 s | Weak relevance |
-| 7 | TinyStories-Instruct-3M | 0.282 | 0.18 s | Short/incomplete output |
-| 8 | TinyStories-Instruct-33M | 0.265 | 0.40 s | Inconsistent instruction response |
-| 9 | TinyStories-Instruct-8M | 0.000 | 0.02 s | Empty output in tested configuration |
-| 10 | distilgpt2 | 0.000 | 1.04 s | Empty after prompt removal in tested configuration |
-
-The raw benchmark is preserved deliberately: it demonstrates why output inspection matters. An automated score initially rewarded repetitive FLAN output. Final selection therefore combines quantitative results with manual child-suitability judgement and a separate production acceptance run.
-
-### TTS candidates — 10-engine compatibility screen
-
-`benchmarks/tts_model_screening.csv` compares MMS, SpeechT5, Bark, XTTS, two ESPnet VITS models, Kokoro, FastSpeech2, gTTS, and pyttsx3. MMS was the only candidate that combined local privacy, a model card, a standard Transformers pipeline, acceptable CPU speed, and Community Cloud suitability.
-
-`benchmarks/tts_voice_persona_results.csv` contains the executable audio test for ten persona settings. Every generated WAV passed the technical checks for non-silence, sensible loudness, duration, and clipping. This is a technical proxy; final grading should also include human listening because perceived warmth and naturalness are subjective.
-
-## Final testing evidence
-
-### Automated unit tests
-
-Run:
-
-```bash
-pytest -q
+```
+taletwinkle/
+├── app.py                       # the Streamlit app (main file)
+├── requirements.txt             # Python packages with min/max versions
+├── packages.txt                 # system packages for Streamlit Cloud (ffmpeg, libsndfile)
+├── .streamlit/config.toml       # light theme, 15 MB upload limit
+├── assets/backgrounds/*.jpg     # 6 illustrated story-world backgrounds
+├── test_images/                 # 10 test images + test_image_ground_truth.csv
+├── benchmark/                   # Colab notebook (10 models x 3 stages) + run 1 screening results
+└── tests/                       # offline automated tests + stand-in modules
 ```
 
-Current result: **8 passed**.
+## 8. Deploy on Streamlit Cloud
+1. Create a **public** GitHub repository (README on, licence GPL v3) and upload every file and folder above.
+   The hidden `.streamlit` folder matters: on the GitHub website, use *Add file → Create new file* and type `.streamlit/config.toml`.
+2. <https://share.streamlit.io> → **Create app** → your repo, branch `main`, main file **`app.py`**.
+   Under **Advanced settings**, choose **Python 3.11**. Click **Deploy**.
+3. The first start downloads and warms up the models (a few minutes). After that they stay loaded.
+4. If the app ever gets stuck: *Manage app → Reboot*.
 
-Tests cover image scaling, RGB conversion, exact story length, assignment range clamping, repeated-sentence cleanup, repeated-caption cleanup, unsafe language detection, the 21-choice voice catalogue, and music-tail mixing.
+## 9. Honest limitations
+* gTTS needs internet (Streamlit Cloud has it) and sends the story text to Google's TTS service. The man's voice and the offline backup run locally.
+* There is no free engine with genuine child or grandparent voices, so TaleTwinkle offers cartoon characters instead of fake-sounding "kids" or "grandparents".
+* Streamlit Community Cloud has limited CPU and about 2.7 GB of memory. The story is therefore written by a small model (in int8), and the full story
+  takes a few seconds; the first words appear almost immediately.
+* Browsers only allow autoplay after the page has been tapped. Uploading a picture counts as a tap.
 
-### Ten-image production acceptance
-
-Run:
-
-```bash
-python benchmarks/run_production_acceptance.py
-```
-
-Final measured results on CPU:
-
-| Metric | Result |
-|---|---:|
-| Test images | 10 |
-| Exact 75-word + safe + valid-audio pass | 100.00% |
-| Mean concept recall | 31.67% |
-| First cold run, including three model loads | 17.82 s |
-| Warm mean caption time | 0.57 s |
-| Warm mean story time | 0.78 s |
-| Warm mean audio time | 3.40 s |
-| **Warm mean end-to-end time** | **4.75 s** |
-| Warm maximum end-to-end time | 5.50 s |
-
-The 3–4 second target is met by image caption plus story text (mean 1.35 seconds), so the visual result appears quickly. Local narration makes the full mean 4.75 seconds. This remains inside the course transcript’s acceptable under-10-second range. Cold startup is reported separately and is dominated by one-time model loading.
-
-## Application flow
-
-```mermaid
-flowchart TD
-    A[Child selects theme and controls] --> B[Drop image]
-    B --> C[Resize and caption with BLIP]
-    C --> D[Generate with TinyStories]
-    D --> E[Safety and exact-length checks]
-    E --> F[Local MMS narration]
-    F --> G[Mix quiet theme music]
-    G --> H[Show image, story, and autoplay player]
-```
-
-## Run locally
-
-Recommended: Python 3.12.
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-pip install -r requirements.txt
-streamlit run app.py
-```
-
-The first launch downloads approximately 2–3 GB of Hugging Face model files. Later runs use the local cache.
-
-## Streamlit Community Cloud deployment
-
-1. Put this project in a GitHub repository with `app.py` and `requirements.txt` at the repository root.
-2. Sign in to [Streamlit Community Cloud](https://share.streamlit.io/).
-3. Choose **Create app**, select the repository and branch, and set the entry point to `app.py`.
-4. Open **Advanced settings** and choose Python 3.12 if available.
-5. Deploy, wait for the first model download, then upload one image to warm all three model caches.
-6. Run the ten provided images and compare deployment timing with `benchmarks/production_acceptance_summary.csv`.
-
-No secrets are required. Model files download from public Hugging Face repositories.
-
-## Important browser behavior
-
-- Streamlit requests autoplay, but a browser may block sound until the user has interacted with the page. Uploading the file normally counts as interaction.
-- Pure Streamlit does not provide a reliable server callback for “audio narration ended.” TaleTwinkle therefore creates one mixed WAV: music is quiet under speech and continues alone for five seconds after speech.
-- The audio player supplies pause and replay controls. A new upload produces a new player and starts the new story automatically when browser policy permits.
-
-## Project structure
-
-```text
-TaleTwinkle/
-├── app.py
-├── requirements.txt
-├── README.md
-├── .streamlit/config.toml
-├── assets/
-│   ├── backgrounds/        # Six original child-friendly theme images
-│   └── music/              # Six original low-volume WAV loops
-├── benchmarks/
-│   ├── model_catalog.py
-│   ├── run_image_caption_benchmark.py
-│   ├── run_story_benchmark.py
-│   ├── run_production_acceptance.py
-│   ├── run_tts_voice_benchmark.py
-│   └── *.csv               # Detailed and summary evidence
-├── test_images/            # Ten reproducible benchmark images
-├── tests/test_app.py
-└── tools/generate_music.py
-```
-
-## Re-run model benchmarks
-
-From the project root:
-
-```bash
-python benchmarks/run_image_caption_benchmark.py
-python benchmarks/run_story_benchmark.py
-python benchmarks/run_tts_voice_benchmark.py
-python benchmarks/run_production_acceptance.py
-```
-
-These downloads are large. The image benchmark temporarily needs substantially more disk space because several GIT and BLIP checkpoints are multiple gigabytes.
-
-## Safety, privacy, and limitations
-
-- The image and story models are open generative models; safeguards reduce risk but cannot guarantee perfect relevance for every possible upload.
-- Uploaded image bytes are processed by local model code. The selected TTS also runs locally, so generated story text is not sent to a speech API.
-- Voice personas are audio effects applied to one English base voice. They do not imitate a real person and should not be presented as literal child, gender, age, or regional identities.
-- Generated text should be supervised by an adult when used with young children.
-- Benchmark “accuracy” is transparent concept recall, not a claim of universal semantic accuracy.
-- Test images are included for academic reproducibility. Backgrounds and music were created specifically for this project.
-
-## Code-quality conventions
-
-- Imports, functions, and main flow are visibly separated.
-- The main flow is further separated into input, process, and output sections.
-- Every non-trivial function has a docstring and uses parameters/arguments.
-- Variables describe their purpose.
-- User-facing numbers use f-strings and `:.2f` formatting.
-- There are no custom classes.
-- Execution begins with:
-
-```python
-if __name__ == "__main__":
-    main()
-```
+## 10. Credits and acknowledgements
+* Models: the Hugging Face model authors (see the model cards). Speech: Google Translate TTS via `gTTS`; `facebook/mms-tts-eng`.
+* Story-world backgrounds and the 6 illustrated test images: created for this project. Photos of people in `test_images/`: ISOM5240 course sample images.
+* Font: Fredoka (Google Fonts). Emojis: Unicode.
+* **Use of generative AI:** Claude (Anthropic) and ChatGPT (OpenAI) were used as coding assistants, as the course syllabus permits. All code was reviewed and tested.
