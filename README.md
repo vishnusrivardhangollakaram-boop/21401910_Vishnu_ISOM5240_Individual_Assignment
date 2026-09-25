@@ -41,6 +41,7 @@ Model cards and inference documentation:
 
 - Left premium panel: six story worlds. Each changes the page background, colour, mascot, decorations and writing instruction.
 - Centre: uploader, resized image and generated caption.
+- Auto-scroll: the page glides down to the story while it is being written, and again when the narration is ready, so the story and the playing audio player are on screen without the child scrolling.
 - Right premium panel: story length, voice speed and storyteller.
 - Below: a full-width live white story box, final story card, audio player and “Tell me another story” control.
 
@@ -125,7 +126,7 @@ Run:
 python tests/run_offline_tests.py
 ```
 
-Current result: **53/53 passed**. The suite does not download models; small stand-ins exercise the app’s functions and complete Streamlit flow.
+Current result: **56/56 passed**. The suite does not download models; small stand-ins exercise the app’s functions and complete Streamlit flow.
 
 Coverage includes:
 
@@ -133,6 +134,7 @@ Coverage includes:
 - caption cleaning, 50/75/100-word limits, poem formatting and safety filtering;
 - no fixed story prefix and safe fallback generation;
 - background sentence queuing and early generation stop;
+- auto-scroll to the live story and to the story + audio (once per new story or voice, never on plain reruns);
 - cache limits plus BLIP → cleanup → Qwen/Piper lifecycle ordering;
 - pitch-preserving 0.5×/2× speed and character effects;
 - final ten-voice order, with Captain Finn and Sir Alan as the two local male choices and Giggle Grace as the child-style choice;
