@@ -7,6 +7,7 @@ FAKE_STORY = ("Pop! A happy little puppy found a big red ball in the sunny park.
               "happy and sleepy, dreaming of more magical games tomorrow. The end is")
 FAKE_CAPTION = "arafed a dog playing with a red ball in the park illustration"
 EVENTS = {"stream_end": None, "stopped_early": False, "words_generated": 0}
+PIPELINE_CALLS = []
 WORD_DELAY_SECONDS = 0.01
 class StoppingCriteriaList(list):
     pass
@@ -42,4 +43,6 @@ class _Pipe:
         if self.task == "text-to-speech":
             n = 16000 * max(1, len(str(args[0]).split()) // 3)
             return {"audio": np.random.default_rng(0).normal(0, 0.1, (1, n)).astype(np.float32), "sampling_rate": 16000}
-def pipeline(task, model=None, **kwargs): return _Pipe(task, model)
+def pipeline(task, model=None, **kwargs):
+    PIPELINE_CALLS.append({"task": task, "model": model, "settings": kwargs})
+    return _Pipe(task, model)
