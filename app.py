@@ -86,7 +86,8 @@ APP_NAME = "TaleTwinkle"
 APP_TAGLINE = "Drop in a picture. Hear a little world come alive."
 
 IMAGE_CAPTION_MODEL_NAME = "Salesforce/blip-image-captioning-base"
-STORY_GENERATION_MODEL_NAME = "Qwen/Qwen2.5-0.5B-Instruct"   # also supported: Qwen/Qwen3-0.6B, HuggingFaceTB/SmolLM2-360M-Instruct
+# Also supported: "Qwen/Qwen3-0.6B" (best quality, slower) and "HuggingFaceTB/SmolLM2-360M-Instruct" (faster, weaker).
+STORY_GENERATION_MODEL_NAME = "Qwen/Qwen2.5-0.5B-Instruct"
 BFLOAT16_STORY_MODELS = ("Qwen/", "HuggingFaceTB/SmolLM2-")     # loaded directly in bfloat16 (no float32 memory spike)
 LOCAL_SPEECH_MODEL_NAME = "rhasspy/piper-voices"
 DEFAULT_PIPER_MODEL_FILE = "en/en_GB/alba/medium/en_GB-alba-medium.onnx"
@@ -146,7 +147,8 @@ STORY_THEMES = {
     "gentle_mystery": {
         "label": "🔎 Gentle Mystery", "selector_label": "🔎🦉  Gentle Mystery",
         "world_name": "Clue Library", "mascot": "🦉", "background_file": "gentle_mystery.png",
-        "story_instruction": "Make it a gentle, cosy mystery where the friends find clues and solve a small puzzle. Nothing scary.",
+        "story_instruction": ("Make it a gentle, cosy mystery where the friends find clues and solve a small puzzle. "
+                              "Nothing scary."),
         "floating_emojis": ["🔍", "🗝️", "🦉", "❓", "📚", "🌙"], "accent_colour": "#8a5a3b",
     },
     "jungle_adventure": {
@@ -240,12 +242,14 @@ def initialise_session_state():
     Create the session-state entries that remember the current story and narration between
     Streamlit reruns (so changing the voice does not re-write the story).
     """
+    # Values remembered between reruns: the current story, its narration and small screen flags.
     default_state_values = {
         "story_request_key": None, "story_result": None,
         "narration_request_key": None, "narration_result": None,
         "story_version": 0, "celebrate_new_story": False,
         "scroll_to_new_audio": False, "scroll_request_count": 0,
     }
+    # Only set a value the first time, so a rerun never wipes the child's current story.
     for state_name, default_value in default_state_values.items():
         if state_name not in st.session_state:
             st.session_state[state_name] = default_value
@@ -263,13 +267,16 @@ def find_background_file(background_file_name):
     """
     app_folder = os.path.dirname(os.path.abspath(__file__))
     file_stem = os.path.splitext(background_file_name)[0]
+    # Look in the expected folder first, then in a few likely alternatives.
     search_folders = [BACKGROUND_FOLDER, os.path.join(app_folder, "assets"), os.path.join(app_folder, "backgrounds"),
                       app_folder, os.path.join(app_folder, "test_images")]
     for search_folder in search_folders:
+        # Accept upper- and lower-case JPG / JPEG / PNG files.
         for file_extension in (".jpg", ".jpeg", ".png", ".JPG", ".JPEG", ".PNG"):
             candidate_path = os.path.join(search_folder, f"{file_stem}{file_extension}")
             if os.path.isfile(candidate_path):
                 return candidate_path
+    # Not found: the page falls back to a plain colour gradient.
     return None
 
 
@@ -302,6 +309,7 @@ def build_floating_emoji_html(floating_emojis):
         str: HTML snippet.
     """
     emoji_spans = []
+    # Spread the emojis across the screen with different sizes, speeds and start times.
     for emoji_index, emoji_symbol in enumerate(floating_emojis * 2):
         left_percent = (emoji_index * 37 + 5) % 96
         delay_seconds = (emoji_index * 1.9) % 14
@@ -504,6 +512,7 @@ def get_process_memory_mb():
     Returns:
         float or None: memory in MB, or None if it cannot be read on this system.
     """
+    # Linux reports the memory in use (VmRSS) in kB; convert it to MB.
     try:
         with open("/proc/self/status", encoding="utf-8") as process_status_file:
             for status_line in process_status_file:
@@ -716,12 +725,14 @@ def load_piper_voice(model_file):
 
     LOGGER.info("Loading Piper voice: %s", model_file)
     selected_voice = None
+    # Download the voice (ONNX model + JSON settings) from Hugging Face once; later calls use the local copy.
     try:
         model_path = hf_hub_download(repo_id=LOCAL_SPEECH_MODEL_NAME, filename=model_file)
         configuration_path = hf_hub_download(repo_id=LOCAL_SPEECH_MODEL_NAME, filename=f"{model_file}.json")
         selected_voice = PiperVoice.load(model_path=model_path, config_path=configuration_path, use_cuda=False)
         LOGGER.info("Piper voice ready: %s", model_file)
         return selected_voice
+    # Release anything half-loaded so a failed load does not keep memory.
     except Exception:
         LOGGER.exception("Piper voice failed to load: %s", model_file)
         if selected_voice is not None:
@@ -781,12 +792,14 @@ def load_story_and_voice_models(persona_settings):
     Returns:
         dict: {"story": story model dict, "local_speech": Piper voice or None, "google_voice_available": bool}.
     """
+    # Work out which voice engine is needed before loading anything.
     google_voice_available = check_google_voice_available()
     voice_engine = choose_voice_engine(persona_settings=persona_settings,
                                        google_voice_available=google_voice_available)
     selected_piper_file = (select_local_model_file(persona_settings=persona_settings)
                            if voice_engine == "piper" else None)
     LOGGER.info("Loading Stage 2 and Stage 3 resources; voice engine=%s", voice_engine)
+    # Load the story model and the (optional) Piper voice at the same time to save waiting.
     with ThreadPoolExecutor(max_workers=2) as model_workers:
         story_job = model_workers.submit(load_story_pipeline, model_name=STORY_GENERATION_MODEL_NAME)
         piper_job = (model_workers.submit(load_piper_voice, model_file=selected_piper_file)
@@ -956,9 +969,11 @@ def build_story_messages(image_caption, theme_instruction, target_word_count):
     Returns:
         list[dict]: system and user messages.
     """
+    # System message: the storyteller's role and the safety rules for young children.
     system_message = ("You are a kind storyteller for children aged 3 to 10. "
                       "Use short sentences and simple, happy words. "
                       "Never include anything scary, violent, sad or unsafe.")
+    # User message: the picture description, story length, theme and style for this story.
     user_message = (f"Write a story for young children, about {target_word_count} words long, "
                     f"based on this picture: \"{image_caption}\". "
                     f"Include the things you can see in the picture. "
@@ -1148,6 +1163,7 @@ def make_backup_story(image_caption, theme_key, target_word_count):
     Returns:
         tuple(str, int): story and word count.
     """
+    # One theme-matched sentence keeps the backup story in the chosen story world.
     theme_middles = {
         "fairy_tale": "A kind fairy sprinkled golden sparkles, and every wish came true.",
         "space_quest": "A friendly little alien waved from a shiny rocket and shared a star cookie.",
@@ -1156,6 +1172,7 @@ def make_backup_story(image_caption, theme_key, target_word_count):
         "silly_poem": "They sang a silly song, all the whole day long.",
         "ocean_magic": "A smiling fish showed them a shell that sparkled like a rainbow.",
     }
+    # The picture caption opens the story so it still matches the uploaded picture.
     backup_sentences = [
         f"Look at this: {image_caption}!",
         "Everyone was curious and ready for a wonderful day.",
@@ -1226,9 +1243,11 @@ def decode_mp3_bytes(mp3_bytes):
     Returns:
         tuple(np.ndarray, int): mono float32 samples and sample rate.
     """
+    # First choice: soundfile decodes the MP3 directly in memory.
     try:
         import soundfile
         decoded_samples, sample_rate = soundfile.read(io.BytesIO(mp3_bytes), dtype="float32")
+    # Fallback: ffmpeg (installed through packages.txt) converts the MP3 to raw samples.
     except Exception:
         if shutil.which("ffmpeg") is None:
             raise
@@ -1237,6 +1256,7 @@ def decode_mp3_bytes(mp3_bytes):
                                         "-ac", "1", "-ar", str(sample_rate), "pipe:1"],
                                        input=mp3_bytes, capture_output=True, check=True)
         decoded_samples = np.frombuffer(ffmpeg_result.stdout, dtype=np.int16).astype(np.float32) / 32768.0
+    # Stereo audio is averaged into one mono channel.
     if decoded_samples.ndim > 1:
         decoded_samples = decoded_samples.mean(axis=1)
     return decoded_samples.astype(np.float32), sample_rate
@@ -1268,9 +1288,11 @@ def speak_sentence_with_piper(sentence_text, model_file):
     Returns:
         tuple(np.ndarray, int): mono float samples and model sample rate.
     """
+    # The lock makes sure only one sentence at a time uses the local voice model.
     selected_voice = load_piper_voice(model_file=model_file)
     with get_speech_lock():
         generated_chunks = list(selected_voice.synthesize(sentence_text))
+    # Join the audio pieces that Piper returns for this sentence.
     speech_segments = [np.asarray(chunk.audio_float_array, dtype=np.float32).squeeze()
                        for chunk in generated_chunks if len(chunk.audio_float_array)]
     if not speech_segments:
@@ -1344,10 +1366,12 @@ def start_speech_queue(voice_engine, persona_settings, local_speech_resources):
     Returns:
         tuple(ThreadPoolExecutor, dict, function): the pool, sentence->future map, queue function.
     """
+    # Google voices are fetched in parallel; the local Piper voice speaks one sentence at a time.
     worker_count = GOOGLE_VOICE_PARALLEL_REQUESTS if voice_engine == "google" else 1
     speech_workers = ThreadPoolExecutor(max_workers=worker_count)
     speech_jobs = {}
 
+    # Each sentence is queued only once; its future holds the audio when it is ready.
     def queue_sentence_for_speech(sentence_text):
         """Start speaking this sentence in the background (only once per sentence)."""
         if sentence_text not in speech_jobs:
@@ -1479,14 +1503,18 @@ def assemble_narration(sentence_clips, persona_settings, voice_speed):
     Returns:
         tuple(bytes, float): WAV bytes and audio length in seconds.
     """
+    # All clips come from the same engine, so they share one sample rate.
     sample_rate = sentence_clips[0][1]
     short_pause = np.zeros(int(SENTENCE_PAUSE_SECONDS * sample_rate), dtype=np.float32)
+    # Join the sentences with a short pause between them.
     joined_samples = np.concatenate([np.concatenate([clip_samples, short_pause]) for clip_samples, _ in sentence_clips])
+    # Apply the character voice (pitch/tempo) and the chosen speed in one step.
     voiced_samples = change_pitch_and_tempo(audio_samples=joined_samples, sample_rate=sample_rate,
                                             semitone_shift=persona_settings["semitone_shift"],
                                             tempo_factor=persona_settings["tempo_factor"] * voice_speed)
     if persona_settings["robot_effect"]:
         voiced_samples = add_robot_effect(audio_samples=voiced_samples, sample_rate=sample_rate)
+    # Make every story equally loud.
     voiced_samples = normalise_loudness(audio_samples=voiced_samples, peak_level=NARRATION_PEAK_LEVEL)
     return convert_samples_to_wav_bytes(audio_samples=voiced_samples, sample_rate=sample_rate), len(voiced_samples) / sample_rate
 
@@ -1506,11 +1534,14 @@ def collect_sentence_clips(story_sentences, speech_jobs, queue_sentence_for_spee
     Returns:
         tuple(list, bool): clips in order, True if the fallback voice was used.
     """
+    # Queue any sentence that was not already spoken in the background.
     for story_sentence in story_sentences:
         queue_sentence_for_speech(sentence_text=story_sentence)
+    # Wait for all sentence clips, in story order.
     try:
         return [speech_jobs[story_sentence].result(timeout=SPEECH_RESULT_TIMEOUT_SECONDS)
                 for story_sentence in story_sentences], False
+    # If Google fails for any sentence, re-speak the whole story with Piper so the voice stays consistent.
     except Exception as online_voice_error:
         LOGGER.warning("Online narration failed; re-speaking with Piper: %s", online_voice_error)
         fallback_model_file = select_local_model_file(persona_settings=persona_settings)
@@ -1533,6 +1564,7 @@ def create_narration_for_story(story_text, persona_settings, voice_speed):
     start_time = time.perf_counter()
     local_speech_resources = None
     speech_workers = None
+    # Choose Google or Piper, depending on the voice and whether Google can be reached.
     google_voice_available = check_google_voice_available()
     voice_engine = choose_voice_engine(persona_settings=persona_settings,
                                        google_voice_available=google_voice_available)
@@ -1540,6 +1572,7 @@ def create_narration_for_story(story_text, persona_settings, voice_speed):
         if voice_engine == "piper":
             local_speech_resources = load_piper_voice(
                 model_file=select_local_model_file(persona_settings=persona_settings))
+        # Speak all sentences (in parallel for Google voices), then join them into one narration.
         speech_workers, speech_jobs, queue_sentence_for_speech = start_speech_queue(
             voice_engine=voice_engine, persona_settings=persona_settings,
             local_speech_resources=local_speech_resources)
@@ -1558,6 +1591,7 @@ def create_narration_for_story(story_text, persona_settings, voice_speed):
     except Exception:
         LOGGER.exception("Narration generation failed")
         raise
+    # Always stop the workers; release the voice model only if memory is high.
     finally:
         if speech_workers is not None:
             speech_workers.shutdown(wait=False, cancel_futures=True)
@@ -1599,10 +1633,12 @@ def create_greeting_audio(voice_key, voice_speed):
         bytes: WAV bytes (empty bytes if no voice is available).
     """
     persona_settings = VOICE_PERSONAS[voice_key]
+    # Use the storyteller's short name, e.g. "Polly the Parrot".
     storyteller_name = re.sub(r"\s*\(.*\)", "", persona_settings["label"]).split(" ", 1)[-1]
     greeting_text = f"Hello! I am {storyteller_name}. Drop a picture, and I will tell you a story!"
     used_piper = False
     try:
+        # Google voices first; the local Piper voice is the fallback.
         if persona_settings["engine"] == "google":
             try:
                 greeting_clip = speak_sentence_with_google(sentence_text=greeting_text,
@@ -1618,6 +1654,7 @@ def create_greeting_audio(voice_key, voice_speed):
             greeting_clip = speak_sentence_with_piper(
                 sentence_text=greeting_text,
                 model_file=select_local_model_file(persona_settings=persona_settings))
+        # Same character effect and speed as the story narration.
         greeting_wav_bytes, _ = assemble_narration(sentence_clips=[greeting_clip],
                                                     persona_settings=persona_settings,
                                                     voice_speed=voice_speed)
@@ -1704,8 +1741,7 @@ def create_story_and_voice(picture, theme_key, target_word_count, persona_settin
         story_ready_time = time.perf_counter()
         story_writing_seconds = story_ready_time - story_writing_start_time
         LOGGER.info("Stage 2: story written in %.2f s (%d words)", story_writing_seconds, story_generation["word_count"])
-        show_story_card(story_slot=story_slot, story_text=story_generation["story"],
-                        word_count=story_generation["word_count"])
+        show_story_card(story_slot=story_slot, story_text=story_generation["story"])
 
         sentence_clips, used_fallback_voice = collect_sentence_clips(
             story_sentences=split_text_into_sentences(story_text=story_generation["story"]), speech_jobs=speech_jobs,
@@ -1756,12 +1792,14 @@ def render_theme_picker():
     Returns:
         str: the selected theme key.
     """
+    # One bordered glass panel holds the whole story-world picker.
     with st.container(border=True):
         st.markdown('<div class="premium-panel-marker"></div>', unsafe_allow_html=True)
         st.markdown('<div class="panel-card"><p class="panel-title">🎨 Pick a story world</p></div>', unsafe_allow_html=True)
         selected_theme_key = st.radio("Story world", options=list(STORY_THEMES.keys()),
                                       format_func=lambda theme_key: STORY_THEMES[theme_key]["selector_label"],
                                       key="theme_choice", label_visibility="collapsed")
+        # Show the mascot and name of the chosen world under the list.
         chosen_theme = STORY_THEMES[selected_theme_key]
         st.markdown(f'<div class="panel-card"><div class="mascot">{chosen_theme["mascot"]}</div>'
                     f'<div class="world-name">Portal opened! Welcome to<br><b>{chosen_theme["world_name"]}</b>!</div></div>',
@@ -1776,12 +1814,14 @@ def render_story_controls():
     Returns:
         tuple(int, float, str): target word count, voice speed, voice key.
     """
+    # One bordered glass panel holds all the story controls.
     with st.container(border=True):
         st.markdown('<div class="premium-panel-marker"></div>', unsafe_allow_html=True)
         st.markdown('<div class="panel-card"><p class="panel-title">📏 Story size</p></div>', unsafe_allow_html=True)
         target_word_count = st.slider("Story size (words)", min_value=MINIMUM_STORY_WORDS, max_value=MAXIMUM_STORY_WORDS,
                                       value=DEFAULT_STORY_WORDS, step=STORY_WORD_STEP, format="%d words",
                                       key="story_size_choice", label_visibility="collapsed")
+        # Friendly name for the chosen length, shown under the slider.
         if target_word_count <= 60:
             length_mood = "Quick Tale ⚡"
         elif target_word_count >= 90:
@@ -1794,6 +1834,7 @@ def render_story_controls():
         voice_speed = st.select_slider("Voice speed", options=VOICE_SPEED_CHOICES, value=DEFAULT_VOICE_SPEED,
                                        format_func=lambda speed_value: f"{speed_value:.2f}x",
                                        key="voice_speed_choice", label_visibility="collapsed")
+        # Friendly name for the chosen speed, shown under the slider.
         if voice_speed < 0.9:
             speed_mood = "Sleepy Turtle 🐢"
         elif voice_speed > 1.25:
@@ -1806,6 +1847,7 @@ def render_story_controls():
                                           index=list(VOICE_PERSONAS.keys()).index(DEFAULT_VOICE_KEY),
                                           format_func=lambda voice_key: VOICE_PERSONAS[voice_key]["label"],
                                           key="voice_choice", label_visibility="collapsed")
+        # Show the chosen storyteller's avatar and short description.
         chosen_persona = VOICE_PERSONAS[selected_voice_key]
         st.markdown(f'<div class="character-card"><div class="mascot">{chosen_persona["avatar"]}</div>'
                     f'<div class="world-name"><b>Your storyteller is ready!</b><br>'
@@ -1837,19 +1879,17 @@ def show_caption_card(caption_slot, picture_caption):
                           unsafe_allow_html=True)
 
 
-def show_story_card(story_slot, story_text, word_count):
+def show_story_card(story_slot, story_text):
     """
     Show the finished story in a big, easy-to-read card.
 
     Parameters:
         story_slot (st.empty): where to show it.
         story_text (str): the story.
-        word_count (int): number of words.
     """
+    # Escape the text so the story can never inject HTML, and keep its line breaks (poems).
     safe_story_html = html.escape(story_text).replace("\n", "<br>")
-    story_slot.markdown(f'<div class="story-card"><span class="word-chip">📖 {word_count} words</span><br>'
-                        f'{safe_story_html}</div>',
-                        unsafe_allow_html=True)
+    story_slot.markdown(f'<div class="story-card">{safe_story_html}</div>', unsafe_allow_html=True)
 
 
 def build_auto_scroll_script(target_selector, also_show_audio, request_number):
@@ -1865,6 +1905,7 @@ def build_auto_scroll_script(target_selector, also_show_audio, request_number):
     Returns:
         str: HTML with the scroll script.
     """
+    # The script runs in a small hidden frame and scrolls the main page (window.parent).
     audio_check = "true" if also_show_audio else "false"
     return f"""
     <script>
@@ -1920,36 +1961,26 @@ def increase_story_version():
 
 def show_grown_up_details(story_result, narration_result, theme_key, voice_key):
     """
-    Collapsible panel for parents / teachers / graders: timings (2 decimals), caption, models and downloads.
+    Collapsible panel for parents / teachers / graders: caption, theme, voice, models and downloads.
+    (Stage timings are written to the server log only, not shown on screen.)
 
     Parameters:
-        story_result (dict): caption, story and timings.
-        narration_result (dict): audio and timings.
+        story_result (dict): caption, story and model details.
+        narration_result (dict): audio and voice engine.
         theme_key (str): chosen theme.
         voice_key (str): chosen voice.
     """
     with st.expander("🧑‍🏫 For grown-ups: how TaleTwinkle made this story"):
-        timing_columns = st.columns(4)
-        timing_columns[0].metric("Picture → words", f"{story_result['caption_seconds']:.2f} s")
-        timing_columns[1].metric("First story words", f"{story_result['first_words_seconds']:.2f} s")
-        timing_columns[2].metric("Whole story", f"{story_result['story_seconds']:.2f} s")
-        timing_columns[3].metric("Voice ready", f"{narration_result['total_seconds']:.2f} s")
-        if "story_writing_seconds" in story_result:
-            st.caption(f"Stage details: caption model ready in {story_result['caption_load_seconds']:.2f} s · "
-                       f"caption {story_result['caption_seconds']:.2f} s · story model ready in "
-                       f"{story_result['story_load_seconds']:.2f} s · story writing {story_result['story_writing_seconds']:.2f} s.")
-        st.caption(f"Voice finished {narration_result['voice_seconds']:.2f} s after the story, because sentences were "
-                   f"spoken in the background while the story was being written. "
-                   f"Audio length: {narration_result['audio_seconds']:.2f} s.")
+        # What each stage produced and which models were used.
         st.markdown(f"**What the picture shows (Stage 1):** {story_result['caption']}")
         st.markdown(f"**Theme:** {STORY_THEMES[theme_key]['label']} &nbsp;|&nbsp; "
-                    f"**Voice:** {VOICE_PERSONAS[voice_key]['label']} "
-                    f"&nbsp;|&nbsp; **Words:** {story_result['word_count']}")
+                    f"**Voice:** {VOICE_PERSONAS[voice_key]['label']}")
         st.markdown(f"**Models:** image-to-text `{IMAGE_CAPTION_MODEL_NAME}` ({story_result['caption_precision']}) → "
                     f"text-generation `{STORY_GENERATION_MODEL_NAME}` ({story_result['story_precision']}) → "
                     f"speech: {narration_result['voice_engine']}")
         if story_result["used_backup_story"]:
             st.info("The story model had a problem, so a safe backup story was used this time.")
+        # Let grown-ups save the story text and audio.
         download_columns = st.columns(2)
         download_columns[0].download_button("📄 Save story text", data=story_result["story"],
                                             file_name="taletwinkle_story.txt", mime="text/plain")
@@ -2006,10 +2037,12 @@ def open_picture_safely(uploaded_picture_file, centre_column):
     Returns:
         PIL.Image.Image or None: the picture, or None if there is no usable picture.
     """
+    # No file uploaded yet: nothing to open.
     if uploaded_picture_file is None:
         return None
     try:
         return open_uploaded_picture(uploaded_picture_file=uploaded_picture_file)
+    # Not a readable picture: show a friendly message instead of crashing.
     except Exception:
         LOGGER.exception("Uploaded picture could not be opened")
         with centre_column:
@@ -2048,6 +2081,7 @@ def run_new_story_request(picture, child_choices, screen_slots, story_request_ke
     """
     screen_slots["sound_label_slot"].markdown('<p class="sound-label">🎙️ Your storyteller is getting ready...</p>',
                                               unsafe_allow_html=True)
+    # Run caption -> story -> voice; the spinner shows the child that something is happening.
     try:
         with st.spinner("🪄 Building your story one magical step at a time..."):
             new_story_result, new_narration_result = create_story_and_voice(
@@ -2056,10 +2090,12 @@ def run_new_story_request(picture, child_choices, screen_slots, story_request_ke
                 persona_settings=child_choices["persona_settings"], voice_speed=child_choices["voice_speed"],
                 story_slot=screen_slots["story_slot"], caption_slot=screen_slots["caption_slot"],
                 scroll_slot=screen_slots["scroll_slot"])
+        # Remember the results so reruns and voice changes can reuse them.
         st.session_state.update({"story_request_key": story_request_key, "story_result": new_story_result,
                                  "narration_request_key": narration_request_key,
                                  "narration_result": new_narration_result, "celebrate_new_story": True,
                                  "scroll_to_new_audio": True})
+    # Any failure: show a friendly message so the child can simply try another picture.
     except Exception as stage_error:
         LOGGER.exception("Complete picture-to-story request failed")
         st.session_state["story_request_key"] = None
@@ -2079,6 +2115,7 @@ def run_voice_change_request(child_choices, screen_slots, narration_request_key)
     """
     screen_slots["sound_label_slot"].markdown('<p class="sound-label">🎙️ Changing the storyteller voice...</p>',
                                               unsafe_allow_html=True)
+    # Only the voice changes: the saved story text is spoken again with the new voice or speed.
     try:
         changed_narration = create_narration_for_story(story_text=st.session_state["story_result"]["story"],
                                                        persona_settings=child_choices["persona_settings"],
@@ -2150,13 +2187,11 @@ def show_story_outputs(picture, story_result, narration_result, child_choices, s
         show_placeholder(display_slot=screen_slots["caption_slot"], placeholder_text="👀 I will describe your picture here.")
         show_placeholder(display_slot=screen_slots["story_slot"], placeholder_text="📖 Your story will appear here...")
     elif story_result is not None:
-        show_story_card(story_slot=screen_slots["story_slot"], story_text=story_result["story"],
-                        word_count=story_result["word_count"])
+        show_story_card(story_slot=screen_slots["story_slot"], story_text=story_result["story"])
 
     if narration_result is not None:
         screen_slots["sound_label_slot"].markdown(
-            f'<p class="sound-label">🎧 {persona_label} is reading your story '
-            f'&nbsp;·&nbsp; ⚡ ready in {narration_result["total_seconds"]:.2f} s</p>', unsafe_allow_html=True)
+            f'<p class="sound-label">🎧 {persona_label} is reading your story</p>', unsafe_allow_html=True)
         screen_slots["sound_slot"].audio(narration_result["wav_bytes"], format="audio/wav", autoplay=True)
         with screen_slots["extras_area"]:
             st.button("🔄 Tell me another story!", on_click=increase_story_version, use_container_width=True)

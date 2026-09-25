@@ -9,17 +9,17 @@ TaleTwinkle is a Streamlit application for children aged 3–10. A child drops i
 | Stage | Selected model | Code in this submission | Why selected |
 |---|---|---|---|
 | Image → caption | `Salesforce/blip-image-captioning-base` | `pipeline("image-to-text")` | Best measured accuracy/speed balance on the 10 project images |
-| Caption → story | `Qwen/Qwen3-0.6B` | `pipeline("text-generation")` with chat messages and non-thinking mode | Ranked first in the focused five-image quality/speed benchmark |
+| Caption → story | `Qwen/Qwen2.5-0.5B-Instruct` | `pipeline("text-generation")` with chat messages, bfloat16 | 2nd in story quality, 100% length compliance and about 0.6 GB less memory than Qwen3, which keeps the app stable under Streamlit Cloud's memory limit |
 | Story → local speech | `rhasspy/piper-voices` | Piper ONNX checkpoints downloaded from Hugging Face | Distinct voices, local fallback and very fast CPU synthesis |
 | Story → regional speech | gTTS | UK, US, Australian and Indian English | Familiar regional voices; Piper automatically takes over if the service is unavailable |
 
 Model cards and inference documentation:
 
 - [BLIP image captioning model card](https://huggingface.co/Salesforce/blip-image-captioning-base) — used through the Transformers `image-to-text` pipeline.
-- [Qwen3-0.6B model card](https://huggingface.co/Qwen/Qwen3-0.6B) — used through the Transformers `text-generation` pipeline with `enable_thinking=False`.
+- [Qwen2.5-0.5B-Instruct model card](https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct) — used through the Transformers `text-generation` pipeline with chat messages.
 - [Piper voices repository](https://huggingface.co/rhasspy/piper-voices) — ONNX voice checkpoints loaded by `piper-tts`.
 
-`roneneldan/TinyStories-33M` was considered and benchmarked, but it was not selected. It is fast, yet it frequently ignores the image/theme instructions and encouraged repetitive template text. Qwen3 does not add the repeated “Once upon a time, the picture came alive” prefix.
+`roneneldan/TinyStories-33M` was considered and benchmarked, but it was not selected. It is fast, yet it frequently ignores the image/theme instructions and encouraged repetitive template text. The Qwen instruction models do not add the repeated “Once upon a time, the picture came alive” prefix.
 
 ## Business and user requirements
 
@@ -27,7 +27,7 @@ Model cards and inference documentation:
 |---|---|
 | Engaging app for children aged 3–10 | Bright theme worlds, large controls, themed backgrounds, animated emoji decorations and child-friendly language |
 | Low user knowledge | One central drag-and-drop uploader; processing starts automatically |
-| 50–100 word story | Slider from 50 to 100, default 75; output is trimmed at a complete sentence and safety checked |
+| 50–100 word story | Slider from 50 to 100, default 50 (fastest); output is trimmed at a complete sentence and safety checked |
 | Relevant to the uploaded image | BLIP caption is included in Qwen’s prompt and displayed directly below the image |
 | Theme choice | Fairy Tale, Space Quest, Gentle Mystery, Jungle Adventure, Silly Poem and Ocean Magic |
 | Attractive, easy UI | Premium themed side panels sit level with the image; the live and final story use wide white reading cards |
@@ -44,6 +44,7 @@ Model cards and inference documentation:
 - Auto-scroll: the page glides down to the story while it is being written, and again when the narration is ready, so the story and the playing audio player are on screen without the child scrolling.
 - Right premium panel: story length, voice speed and storyteller.
 - Below: a full-width live white story box, final story card, audio player and “Tell me another story” control.
+- Clean child-facing screen: no timings or word counts are shown anywhere in the app. Stage timings are written only to the server log (`TIMING SUMMARY` line) for performance checking.
 
 The final order is **👩‍🏫 Story Lady Lily**, **🦜 Polly**, **🤖 Robo Beep**, **👧 Giggle Grace**, **🧭 Captain Finn**, **👩 Aunty Chloe**, **🎩 Sir Alan**, **🐱 Whiskers**, **👩 Aunt Amy** and **👩‍🏫 Teacher Priya**. Giggle Grace is transparently labelled as a pitch-adjusted child-style effect, not a recording of a child. Uncle Max, Bruno the Bear, Jolly Joe, Hero Bryce and Buddy Ben have been removed.
 
@@ -85,8 +86,8 @@ Caption accuracy is the percentage of expected objects named. Overall score weig
 
 The current notebook configuration compares:
 
-1. `Qwen/Qwen3-0.6B` ✅
-2. `Qwen/Qwen2.5-0.5B-Instruct`
+1. `Qwen/Qwen3-0.6B`
+2. `Qwen/Qwen2.5-0.5B-Instruct` ✅ (production choice, see below)
 3. `Qwen/Qwen2.5-1.5B-Instruct`
 4. `HuggingFaceTB/SmolLM2-135M-Instruct`
 5. `HuggingFaceTB/SmolLM2-360M-Instruct`
@@ -104,11 +105,11 @@ The checked-in `run1_initial_screening/story_summary.csv` is retained as the ear
 
 | Rank | Model | Story quality | Mean time | Median time | Overall |
 |---:|---|---:|---:|---:|---:|
-| 1 | `Qwen/Qwen3-0.6B` ✅ | 62.71% | 11.27 s | 10.14 s | **88.60** |
-| 2 | `Qwen/Qwen2.5-0.5B-Instruct` | 57.79% | 13.68 s | 15.37 s | **80.81** |
+| 1 | `Qwen/Qwen3-0.6B` | 62.71% | 11.27 s | 10.14 s | **88.60** |
+| 2 | `Qwen/Qwen2.5-0.5B-Instruct` ✅ | 57.79% | 13.68 s | 15.37 s | **80.81** |
 | 3 | `google/flan-t5-base` | 27.98% | 4.84 s | 5.05 s | **55.70** |
 
-Qwen3 is selected because it ranked first on the same 80% relative story-quality / 20% relative-speed rule. It is called as `pipeline(messages, tokenizer_encode_kwargs={"enable_thinking": False})`; Transformers adds the generation prompt automatically for a chat ending in a user message. The measured CPU completion time is still above the desired 3–4 seconds, so the app streams words immediately, narrates completed sentences concurrently and releases Stage 2 after each run. The full method, raw stories and precision experiment are documented in [`benchmarks/run2_qwen3_focused/`](benchmarks/run2_qwen3_focused/README.md).
+**Production decision (deployment test on Streamlit Cloud):** Qwen3 ranked first offline, but on Streamlit Cloud it pushed the app to about 2.98 GB of memory (BLIP + Qwen3), close to the platform limit. In one test run, story writing slowed to 229.76 s under that memory pressure. `Qwen/Qwen2.5-0.5B-Instruct` is the benchmark's second-ranked model (quality 57.79% vs 62.71%) with 100% length compliance (vs 60%) and about 0.6 GB less memory (1171 MB vs 1763 MB measured memory increase). Reliable, predictable response time matters more for young users than a 5-point quality difference, so Qwen2.5 is used in production. Qwen3 remains supported by changing one constant (`STORY_GENERATION_MODEL_NAME`). The full method, raw stories and precision experiment are documented in [`benchmarks/run2_qwen3_focused/`](benchmarks/run2_qwen3_focused/README.md).
 
 Model-card research also identified `Qwen/Qwen3.5-0.8B`, `google/gemma-3-270m-it`, `meta-llama/Llama-3.2-1B-Instruct` and `tiiuae/Falcon3-1B-Instruct` as possible future challengers. They are not labelled as benchmark winners because they were not run in this focused test and the larger models increase Streamlit Cloud memory risk.
 
@@ -126,7 +127,7 @@ Run:
 python tests/run_offline_tests.py
 ```
 
-Current result: **56/56 passed**. The suite does not download models; small stand-ins exercise the app’s functions and complete Streamlit flow.
+Current result: **61/61 passed**. The suite does not download models; small stand-ins exercise the app’s functions and complete Streamlit flow.
 
 Coverage includes:
 
@@ -151,7 +152,7 @@ Detailed evidence is saved in [tests/offline_test_results.md](tests/offline_test
 - separate **IMPORT PART**, **FUNCTION PART** and **MAIN PART** comments;
 - small modular functions with docstrings and descriptive variable names;
 - values passed explicitly as `parameter=argument`;
-- f-strings and `.2f` timing output;
+- f-strings and `%.2f` timing output in the server log;
 - no application classes;
 - `def main()` with INPUT / PROCESS / OUTPUT sections;
 - `if __name__ == "__main__": main()` entry point.
