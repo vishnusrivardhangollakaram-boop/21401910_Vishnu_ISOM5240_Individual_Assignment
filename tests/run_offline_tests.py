@@ -17,6 +17,7 @@ Run from the project folder:  python tests/run_offline_tests.py
 # IMPORT PART
 # ==============================
 import io
+import inspect
 import os
 import sys
 import time
@@ -163,6 +164,11 @@ def test_caption_and_story_functions():
     record_result(test_name="Prompt contains caption, theme, length and 'no title'",
                   passed="a dog with a ball" in story_messages[1]["content"] and "75 words" in story_messages[1]["content"]
                   and "Make it magical." in story_messages[1]["content"], details="chat messages built")
+    qwen3_settings = app.get_story_chat_template_settings(model_name=app.STORY_GENERATION_MODEL_NAME)
+    record_result(test_name="Qwen3 chat uses direct messages with thinking disabled",
+                  passed=app.STORY_GENERATION_MODEL_NAME == "Qwen/Qwen3-0.6B"
+                  and qwen3_settings == {"tokenizer_encode_kwargs": {"enable_thinking": False}},
+                  details="pipeline(messages), add_generation_prompt=True automatically, enable_thinking=False")
 
 
 def test_background_speech_queue():
@@ -175,6 +181,32 @@ def test_background_speech_queue():
     record_result(test_name="Finished sentences queued one by one during streaming",
                   passed=queued_sentences == ["The dog ran fast.", "The cat jumped!", "Then they slept."],
                   details=f"{queued_sentences}")
+
+
+def test_resource_controls():
+    """Resource caches are bounded and model stages follow the memory-safe order."""
+    cache_limits = {
+        "backgrounds": app.read_background_as_base64._cache_settings.get("max_entries"),
+        "Piper voices": app.load_piper_voice._cache_settings.get("max_entries"),
+        "greetings": app.create_greeting_audio._cache_settings.get("max_entries"),
+    }
+    record_result(test_name="Resource caches have explicit size limits",
+                  passed=cache_limits == {"backgrounds": 6, "Piper voices": 2, "greetings": 12},
+                  details=str(cache_limits))
+    flow_source = inspect.getsource(app.create_story_and_voice)
+    caption_load_position = flow_source.index("load_caption_pipeline")
+    caption_release_position = flow_source.index("clear_cached_model(load_caption_pipeline")
+    generation_load_position = flow_source.index("load_story_and_voice_models")
+    record_result(test_name="BLIP is released before Qwen and Piper load",
+                  passed=caption_load_position < caption_release_position < generation_load_position,
+                  details="Stage 1 load → caption/release → Stage 2/3 load")
+    story_clear_count = len(app.load_story_pipeline._cache_clear_calls)
+    piper_clear_count = len(app.load_piper_voice._cache_clear_calls)
+    app.release_stage_two_and_three_models()
+    record_result(test_name="Explicit Stage 2 and Stage 3 cleanup clears both model caches",
+                  passed=len(app.load_story_pipeline._cache_clear_calls) == story_clear_count + 1
+                  and len(app.load_piper_voice._cache_clear_calls) == piper_clear_count + 1,
+                  details="Qwen and Piper cache clear calls recorded")
 
 
 def test_early_stop():
@@ -209,7 +241,7 @@ def test_voice_functions():
         record_result(test_name=f"Voice speed {voice_speed:.2f}x keeps pitch",
                       passed=abs(measured_seconds - 30 / voice_speed) < 0.2 and abs(measured_pitch - 220) < 2,
                       details=f"{measured_seconds:.2f} s (expected {30 / voice_speed:.2f}), pitch {measured_pitch:.2f} Hz, took {elapsed_seconds:.2f} s")
-    for persona_key in ("polly_parrot", "buddy_ben", "giggle_grace"):
+    for persona_key in ("polly_parrot", "giggle_grace"):
         persona_settings = app.VOICE_PERSONAS[persona_key]
         shifted_tone = app.change_pitch_and_tempo(audio_samples=test_tone, sample_rate=sample_rate,
                                                   semitone_shift=persona_settings["semitone_shift"], tempo_factor=persona_settings["tempo_factor"])
@@ -223,19 +255,21 @@ def test_voice_functions():
     record_result(test_name="Default voice is the real British lady (no pitch effect)",
                   passed=app.DEFAULT_VOICE_KEY in real_voice_keys and default_persona["accent_domain"] == "co.uk",
                   details=f"{default_persona['label']}; {len(real_voice_keys)} real unaltered voices")
-    voice_order = list(app.VOICE_PERSONAS.keys())[:3]
-    record_result(test_name="Voice order: Lily, then Parrot, then Kitten", passed=voice_order == ["lily_british", "polly_parrot", "whiskers_kitten"],
+    voice_order = list(app.VOICE_PERSONAS.keys())
+    expected_voice_order = ["lily_british", "polly_parrot", "robo_beep", "giggle_grace", "captain_finn",
+                            "chloe_australian", "sir_alan", "whiskers_kitten", "amy_american", "priya_indian"]
+    record_result(test_name="Voice order matches the final kid-friendly character list", passed=voice_order == expected_voice_order,
                   details=f"{voice_order}")
     male_voice_keys = [voice_key for voice_key, persona in app.VOICE_PERSONAS.items()
                        if persona["engine"] == "piper" and persona.get("semitone_shift") == 0]
-    kid_voice_keys = [voice_key for voice_key in ("buddy_ben", "giggle_grace")
-                      if voice_key in app.VOICE_PERSONAS]
-    record_result(test_name="Four distinct male voices replace Uncle Max and Bruno",
-                  passed=len(male_voice_keys) == 4 and "max_man" not in app.VOICE_PERSONAS
-                  and "bruno_bear" not in app.VOICE_PERSONAS,
+    removed_voice_keys = {"joe_storyteller", "hero_bryce", "buddy_ben", "max_man", "bruno_bear"}
+    record_result(test_name="Only Captain Finn and Sir Alan remain as local male voices",
+                  passed=male_voice_keys == ["captain_finn", "sir_alan"]
+                  and removed_voice_keys.isdisjoint(app.VOICE_PERSONAS),
                   details=f"male choices={male_voice_keys}")
-    record_result(test_name="One boy-style and one girl-style voice are available",
-                  passed=kid_voice_keys == ["buddy_ben", "giggle_grace"], details=f"kid choices={kid_voice_keys}")
+    record_result(test_name="Giggle Grace remains as the child-style voice",
+                  passed="giggle_grace" in app.VOICE_PERSONAS and "buddy_ben" not in app.VOICE_PERSONAS,
+                  details="one clearly labelled child-style voice")
     robot_tone = app.add_robot_effect(audio_samples=test_tone[:sample_rate], sample_rate=sample_rate)
     record_result(test_name="Robot effect changes the sound", passed=not np.allclose(robot_tone, test_tone[:sample_rate]), details="60 Hz buzz added")
     mp3_buffer = io.BytesIO()
@@ -251,6 +285,8 @@ def test_voice_functions():
 
 def test_screen_flow():
     """Full main() flow: placeholders + greeting, live story, background speech, autoplay, caching, changes, bad file."""
+    quantize_calls_before_first_visit = len(torch.QUANTIZE_CALLS)
+    pipeline_calls_before_first_visit = len(transformers.PIPELINE_CALLS)
     first_visit_calls = run_app_once()
     placeholder_count = sum(1 for call in first_visit_calls if call[0] == "empty.markdown" and "placeholder-card" in call[1][0])
     greeting_players = [call for call in first_visit_calls if call[0] == "empty.audio"]
@@ -259,8 +295,9 @@ def test_screen_flow():
                   details=f"{placeholder_count} placeholders, greeting player (no autoplay)")
     record_result(test_name="No background music anywhere", passed=not any(call[2].get("loop") for call in first_visit_calls if call[0].endswith("audio"))
                   and not hasattr(app, "load_theme_music"), details="music code and files removed")
-    record_result(test_name="Models shrunk to int8 at start-up", passed=len(torch.QUANTIZE_CALLS) >= 2,
-                  details=f"{len(torch.QUANTIZE_CALLS)} models quantized")
+    record_result(test_name="Greeting does not load caption or story models",
+                  passed=len(torch.QUANTIZE_CALLS) == quantize_calls_before_first_visit,
+                  details="no ML model quantization on an empty first visit")
 
     gtts.REQUESTS.clear()
     st.WIDGET_VALUES["picture_upload"] = make_fake_upload(picture_bytes=make_picture_bytes(picture_format="JPEG"))
@@ -269,6 +306,10 @@ def test_screen_flow():
     story_audio = [call for call in upload_calls if call[0] == "empty.audio"]
     story_result = st.session_state["story_result"]
     narration_result = st.session_state["narration_result"]
+    upload_model_tasks = [call["task"] for call in transformers.PIPELINE_CALLS[pipeline_calls_before_first_visit:]]
+    record_result(test_name="Caption and story models load only after image upload",
+                  passed="image-to-text" in upload_model_tasks and "text-generation" in upload_model_tasks,
+                  details="BLIP then Qwen loaded for the first story request")
     record_result(test_name="Upload: picture shown, story streamed, narration autoplays (no button click)",
                   passed="empty.image" in call_names and "write_stream" in call_names and len(story_audio) == 1
                   and story_audio[0][2].get("autoplay") is True and "balloons" in call_names,
@@ -387,6 +428,7 @@ def main():
     test_picture_functions()
     test_caption_and_story_functions()
     test_background_speech_queue()
+    test_resource_controls()
     test_early_stop()
     test_voice_functions()
     test_screen_flow()
