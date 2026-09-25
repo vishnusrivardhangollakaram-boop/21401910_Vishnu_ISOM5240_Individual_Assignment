@@ -30,8 +30,8 @@ Model selection (10 candidates per stage, 10 test images, see README.md and benc
         HuggingFaceTB/SmolLM2-135M-Instruct, HuggingFaceTB/SmolLM2-360M-Instruct, HuggingFaceTB/SmolLM2-1.7B-Instruct,
         TinyLlama/TinyLlama-1.1B-Chat-v1.0, google/flan-t5-base, google/flan-t5-small,
         roneneldan/TinyStories-33M, roneneldan/TinyStories-Instruct-33M
-    Stage 3 text-to-speech: gTTS UK/US/Australian/Indian English (chosen: real female voices, fast),
-        facebook/mms-tts-eng (chosen: real male voice, local Hugging Face pipeline), microsoft/speecht5_tts,
+    Stage 3 text-to-speech: gTTS UK/US/Australian/Indian English (chosen: familiar female voices, fast),
+        rhasspy/piper-voices (chosen: sub-second local male and child-style narration), microsoft/speecht5_tts,
         suno/bark-small, hexgrad/Kokoro-82M, kakao-enterprise/vits-ljs, kakao-enterprise/vits-vctk,
         espnet/kan-bayashi_ljspeech_vits, facebook/fastspeech2-en-ljspeech, pyttsx3
 
@@ -69,7 +69,8 @@ APP_TAGLINE = "Drop in a picture. Hear a little world come alive."
 
 IMAGE_CAPTION_MODEL_NAME = "Salesforce/blip-image-captioning-base"
 STORY_GENERATION_MODEL_NAME = "Qwen/Qwen2.5-0.5B-Instruct"
-MALE_SPEECH_MODEL_NAME = "facebook/mms-tts-eng"
+LOCAL_SPEECH_MODEL_NAME = "rhasspy/piper-voices"
+DEFAULT_PIPER_MODEL_FILE = "en/en_GB/alba/medium/en_GB-alba-medium.onnx"
 SHRINK_MODELS_WITH_INT8 = True              # int8 weights: ~3x smaller and faster on Streamlit Cloud's CPU
 
 MINIMUM_STORY_WORDS = 50
@@ -92,32 +93,32 @@ UNSAFE_STORY_WORDS = ["kill", "killed", "blood", "bloody", "dead", "die", "died"
 
 STORY_THEMES = {
     "fairy_tale": {
-        "label": "🏰 Fairy Tale", "world_name": "Fairy Tale Land", "mascot": "🦄", "background_file": "fairy_tale.jpg",
+        "label": "🏰 Fairy Tale", "world_name": "Fairy Tale Land", "mascot": "🦄", "background_file": "fairy_tale.png",
         "story_instruction": "Make it a magical fairy tale with kind fairies, castles, wishes or talking animals.",
         "floating_emojis": ["✨", "🦄", "🌸", "👑", "🧚", "⭐"], "accent_colour": "#8d4de8",
     },
     "space_quest": {
-        "label": "🚀 Space Quest", "world_name": "Outer Space", "mascot": "👽", "background_file": "space_quest.jpg",
+        "label": "🚀 Space Quest", "world_name": "Outer Space", "mascot": "👽", "background_file": "space_quest.png",
         "story_instruction": "Make it a friendly space adventure with rockets, twinkly stars, planets or cute friendly aliens.",
         "floating_emojis": ["⭐", "🪐", "🚀", "👽", "🛸", "🌟"], "accent_colour": "#3f75e8",
     },
     "gentle_mystery": {
-        "label": "🔎 Gentle Mystery", "world_name": "Clue Library", "mascot": "🦉", "background_file": "gentle_mystery.jpg",
+        "label": "🔎 Gentle Mystery", "world_name": "Clue Library", "mascot": "🦉", "background_file": "gentle_mystery.png",
         "story_instruction": "Make it a gentle, cosy mystery where the friends find clues and solve a small puzzle. Nothing scary.",
         "floating_emojis": ["🔍", "🗝️", "🦉", "❓", "📚", "🌙"], "accent_colour": "#8a5a3b",
     },
     "jungle_adventure": {
-        "label": "🦜 Jungle Adventure", "world_name": "Jungle Island", "mascot": "🦁", "background_file": "jungle_adventure.jpg",
+        "label": "🦜 Jungle Adventure", "world_name": "Jungle Island", "mascot": "🦁", "background_file": "jungle_adventure.png",
         "story_instruction": "Make it an exciting jungle adventure with exploring, brave friends, animals and a treasure map.",
         "floating_emojis": ["🗺️", "🧭", "🌴", "🦜", "🦋", "💎"], "accent_colour": "#2f8b57",
     },
     "silly_poem": {
-        "label": "🎵 Silly Poem", "world_name": "Rhyme Garden", "mascot": "🐝", "background_file": "silly_poem.jpg",
+        "label": "🎵 Silly Poem", "world_name": "Rhyme Garden", "mascot": "🐝", "background_file": "silly_poem.png",
         "story_instruction": "Write it as a short, silly rhyming poem with short lines that rhyme and a giggly surprise.",
         "floating_emojis": ["🎵", "🌈", "🐝", "🌻", "🎈", "🎶"], "accent_colour": "#e05b9d",
     },
     "ocean_magic": {
-        "label": "🐠 Ocean Magic", "world_name": "Coral Reef", "mascot": "🐙", "background_file": "ocean_magic.jpg",
+        "label": "🐠 Ocean Magic", "world_name": "Coral Reef", "mascot": "🐙", "background_file": "ocean_magic.png",
         "story_instruction": "Make it a magical underwater adventure with friendly fish, shiny shells and sparkly coral.",
         "floating_emojis": ["🫧", "🐠", "🐚", "🐬", "🪸", "⭐"], "accent_colour": "#159bb5",
     },
@@ -125,8 +126,8 @@ STORY_THEMES = {
 DEFAULT_THEME_KEY = "fairy_tale"
 POEM_THEME_KEY = "silly_poem"
 
-# Storyteller voices. "google" voices are real Google TTS voices (accent chosen by the domain);
-# "hugging_face" is the real male voice of facebook/mms-tts-eng. Cartoon characters add pitch/tempo effects.
+# Storyteller voices. Google supplies familiar regional voices. Piper supplies fast local male/female
+# checkpoints hosted on Hugging Face. Kid choices are clearly labelled child-style pitch effects.
 VOICE_PERSONAS = {
     "lily_british": {
         "label": "👩‍🏫 Story Lady Lily (British)", "avatar": "👩‍🏫", "about": "A warm British storyteller",
@@ -152,13 +153,35 @@ VOICE_PERSONAS = {
         "label": "👩 Teacher Priya (Indian English)", "avatar": "👩‍🏫", "about": "A kind teacher with an Indian English accent",
         "engine": "google", "accent_domain": "co.in", "semitone_shift": 0.0, "tempo_factor": 1.0, "robot_effect": False,
     },
-    "max_man": {
-        "label": "👨 Uncle Max (man's voice)", "avatar": "👨", "about": "A calm man's voice",
-        "engine": "hugging_face", "accent_domain": "", "semitone_shift": 0.0, "tempo_factor": 1.0, "robot_effect": False,
+    "captain_finn": {
+        "label": "🧭 Captain Finn (American Male)", "avatar": "🧭", "about": "A bold, friendly adventure narrator",
+        "engine": "piper", "accent_domain": "", "piper_model_file": "en/en_US/ryan/medium/en_US-ryan-medium.onnx",
+        "semitone_shift": 0.0, "tempo_factor": 1.0, "robot_effect": False,
     },
-    "bruno_bear": {
-        "label": "🐻 Bruno the Bear", "avatar": "🐻", "about": "A big, cuddly cartoon bear",
-        "engine": "hugging_face", "accent_domain": "", "semitone_shift": -3.5, "tempo_factor": 0.92, "robot_effect": False,
+    "joe_storyteller": {
+        "label": "🎙️ Jolly Joe (American Male)", "avatar": "🎙️", "about": "A warm, natural storybook voice",
+        "engine": "piper", "accent_domain": "", "piper_model_file": "en/en_US/joe/medium/en_US-joe-medium.onnx",
+        "semitone_shift": 0.0, "tempo_factor": 0.98, "robot_effect": False,
+    },
+    "hero_bryce": {
+        "label": "🦸 Hero Bryce (American Male)", "avatar": "🦸", "about": "A bright, energetic hero voice",
+        "engine": "piper", "accent_domain": "", "piper_model_file": "en/en_US/bryce/medium/en_US-bryce-medium.onnx",
+        "semitone_shift": 0.0, "tempo_factor": 1.03, "robot_effect": False,
+    },
+    "sir_alan": {
+        "label": "🎩 Sir Alan (British Male)", "avatar": "🎩", "about": "A gentle British bedtime narrator",
+        "engine": "piper", "accent_domain": "", "piper_model_file": "en/en_GB/alan/medium/en_GB-alan-medium.onnx",
+        "semitone_shift": 0.0, "tempo_factor": 0.96, "robot_effect": False,
+    },
+    "buddy_ben": {
+        "label": "🧒 Buddy Ben (Kid-Style Boy)", "avatar": "🧒", "about": "A cheerful peer-age boy-style voice",
+        "engine": "piper", "accent_domain": "", "piper_model_file": "en/en_US/bryce/medium/en_US-bryce-medium.onnx",
+        "semitone_shift": 3.0, "tempo_factor": 1.05, "robot_effect": False,
+    },
+    "giggle_grace": {
+        "label": "👧 Giggle Grace (Kid-Style Girl)", "avatar": "👧", "about": "A lively peer-age girl-style voice",
+        "engine": "piper", "accent_domain": "", "piper_model_file": "en/en_US/amy/medium/en_US-amy-medium.onnx",
+        "semitone_shift": 3.0, "tempo_factor": 1.05, "robot_effect": False,
     },
     "robo_beep": {
         "label": "🤖 Robo Beep", "avatar": "🤖", "about": "A friendly cartoon robot",
@@ -202,7 +225,7 @@ def find_background_file(background_file_name):
     folders, and accepts .jpg, .jpeg or .png, so a slightly different upload layout does not break the app.
 
     Parameters:
-        background_file_name (str): expected file name, e.g. "fairy_tale.jpg".
+        background_file_name (str): expected file name, e.g. "fairy_tale.png".
     Returns:
         str or None: full path of the picture, or None if it cannot be found.
     """
@@ -277,7 +300,8 @@ def apply_page_style(theme_settings):
         {background_css};
         background-size: cover; background-position: center; background-attachment: fixed; }}
     [data-testid="stHeader"] {{ background: transparent; }}
-    .block-container, [data-testid="stMainBlockContainer"] {{ position: relative; z-index: 1; max-width: 1280px; padding-top: 1.2rem; }}
+    .block-container, [data-testid="stMainBlockContainer"] {{ position: relative; z-index: 1; max-width: 1420px;
+        padding-top: 0.45rem; padding-bottom: 1.5rem; }}
     h1, h2, h3, h4, p, label, li, .story-card, .taletwinkle-title, .taletwinkle-tagline {{ font-family: 'Fredoka', 'Comic Sans MS', sans-serif !important; }}
     .floating-layer {{ position: fixed; inset: 0; pointer-events: none; z-index: 0; overflow: hidden; }}
     .floating-emoji {{ position: absolute; bottom: -12vh; opacity: 0.6; animation-name: floatUp;
@@ -287,20 +311,38 @@ def apply_page_style(theme_settings):
         100% {{ transform: translateY(-125vh) rotate(340deg); }} }}
     @keyframes bounceSoft {{ 0%, 100% {{ transform: translateY(0); }} 50% {{ transform: translateY(-8px); }} }}
     @keyframes wiggle {{ 0%, 100% {{ transform: rotate(-6deg); }} 50% {{ transform: rotate(6deg); }} }}
-    .taletwinkle-title {{ text-align: center; font-size: clamp(2.3rem, 5vw, 3.6rem); font-weight: 700; color: #30234d;
-        text-shadow: 0 0 12px white, 0 3px 0 white; margin-bottom: 0; animation: bounceSoft 3s ease-in-out infinite; }}
-    .taletwinkle-tagline {{ text-align: center; font-size: 1.3rem; color: #30234d; text-shadow: 0 0 10px white;
-        margin-bottom: 1rem; font-weight: 600; }}
-    .panel-card {{ background: rgba(255,255,255,0.92); border-radius: 24px; padding: 0.8rem 1.1rem;
-        box-shadow: 0 8px 24px rgba(48,35,77,0.14); margin-bottom: 0.6rem; }}
+    .taletwinkle-title {{ text-align: center; font-size: clamp(3.4rem, 7vw, 6.2rem); line-height: 0.98;
+        font-weight: 700; letter-spacing: -0.04em; color: #30234d; text-shadow: 0 0 18px white, 0 5px 0 white,
+        0 12px 28px {accent_colour}55; margin: 0 0 0.15rem; animation: bounceSoft 3s ease-in-out infinite; }}
+    .taletwinkle-tagline {{ text-align: center; font-size: clamp(1.05rem, 2vw, 1.4rem); color: #30234d;
+        text-shadow: 0 0 10px white; margin-bottom: 0.55rem; font-weight: 600; }}
+    .panel-card {{ background: linear-gradient(145deg, rgba(255,255,255,0.98), {accent_colour}18); border-radius: 20px;
+        padding: 0.62rem 0.85rem; border: 1px solid {accent_colour}35; box-shadow: 0 8px 22px rgba(48,35,77,0.12);
+        margin-bottom: 0.45rem; }}
     .panel-title {{ font-family: 'Fredoka', sans-serif; font-size: 1.3rem; font-weight: 600; color: #30234d; margin: 0; }}
-    .mascot {{ font-size: 3.6rem; text-align: center; animation: wiggle 2.2s ease-in-out infinite; }}
+    .mascot {{ font-size: 3rem; text-align: center; animation: wiggle 2.2s ease-in-out infinite; }}
     .world-name {{ text-align: center; font-family: 'Fredoka', sans-serif; font-size: 1.05rem; color: #30234d; }}
+    [data-testid="stVerticalBlockBorderWrapper"]:has(.premium-panel-marker) {{
+        background: linear-gradient(155deg, rgba(255,255,255,0.96), {accent_colour}25) !important;
+        border: 2px solid {accent_colour}75 !important; border-radius: 28px !important;
+        box-shadow: 0 16px 38px rgba(48,35,77,0.18), inset 0 1px 0 rgba(255,255,255,0.95) !important;
+        backdrop-filter: blur(12px); padding: 0.85rem 0.9rem 0.7rem !important; position: relative; overflow: hidden; }}
+    [data-testid="stVerticalBlockBorderWrapper"]:has(.premium-panel-marker)::before {{ content: ""; position: absolute;
+        top: 0; left: 10%; right: 10%; height: 4px; border-radius: 0 0 8px 8px; background: {accent_colour}; }}
+    .premium-panel-marker {{ height: 0; overflow: hidden; }}
+    [data-testid="stVerticalBlockBorderWrapper"]:has(.live-story-marker) {{ background: rgba(255,255,255,0.97) !important;
+        border: 2px solid {accent_colour}70 !important; border-radius: 26px !important;
+        box-shadow: 0 12px 30px rgba(48,35,77,0.16) !important; padding: 1rem 1.3rem !important;
+        min-height: 9rem; font-family: 'Fredoka', sans-serif; font-size: 1.28rem; line-height: 1.72; color: #2f2841; }}
+    .live-story-marker {{ height: 0; overflow: hidden; }}
+    .caption-card {{ background: rgba(255,255,255,0.96); border: 2px solid {accent_colour}55; border-radius: 18px;
+        padding: 0.62rem 0.95rem; margin: 0.45rem 0 0.75rem; color: #342b4d; font-size: 1.05rem;
+        box-shadow: 0 7px 18px rgba(48,35,77,0.12); text-align: center; }}
     .placeholder-card {{ background: rgba(255,255,255,0.90); border: 3px dashed {accent_colour}; border-radius: 24px;
         text-align: center; padding: 1.4rem; font-family: 'Fredoka', sans-serif; font-size: 1.2rem; color: #51436f; margin-bottom: 0.8rem; }}
-    .story-card {{ background: rgba(255,255,255,0.96); border-radius: 24px; padding: 1.2rem 1.4rem;
-        border-left: 10px solid {accent_colour}; font-size: 1.35rem; line-height: 1.75; color: #2f2841;
-        box-shadow: 0 8px 24px rgba(48,35,77,0.14); margin-bottom: 0.8rem; }}
+    .story-card {{ width: 100%; background: rgba(255,255,255,0.97); border-radius: 26px; padding: 1.15rem 1.45rem;
+        border: 2px solid {accent_colour}60; border-left: 10px solid {accent_colour}; font-size: 1.3rem; line-height: 1.68;
+        color: #2f2841; box-shadow: 0 12px 30px rgba(48,35,77,0.16); margin: 0.45rem 0 0.65rem; }}
     .word-chip {{ display: inline-block; background: {accent_colour}; color: white; border-radius: 999px;
         padding: 0.15rem 0.8rem; font-size: 0.95rem; margin: 0 0.4rem 0.3rem 0; font-family: 'Fredoka', sans-serif; }}
     .sound-label {{ font-family: 'Fredoka', sans-serif; font-size: 1.15rem; color: #30234d; margin: 0.2rem 0;
@@ -311,18 +353,22 @@ def apply_page_style(theme_settings):
     [data-testid="stFileUploader"] label p {{ font-size: 1.35rem !important; font-weight: 600; color: #30234d;
         background: rgba(255,255,255,0.88); border-radius: 12px; padding: 0.1rem 0.6rem; }}
     [data-testid="stImage"] img {{ border-radius: 22px; box-shadow: 0 8px 24px rgba(48,35,77,0.18); }}
-    div[role="radiogroup"] label {{ background: rgba(255,255,255,0.95); border-radius: 18px; padding: 0.45rem 0.8rem;
-        margin: 0.22rem 0; width: 100%; border: 2px solid transparent; box-shadow: 0 2px 6px rgba(0,0,0,0.08); }}
-    div[role="radiogroup"] label:has(input:checked) {{ border: 2px solid {accent_colour}; background: #fff8e7; }}
-    div[role="radiogroup"] label p {{ font-size: 1.12rem !important; }}
+    div[role="radiogroup"] label {{ background: rgba(255,255,255,0.88); border-radius: 15px; padding: 0.32rem 0.62rem;
+        margin: 0.13rem 0; width: 100%; border: 2px solid transparent; box-shadow: 0 2px 6px rgba(0,0,0,0.06); }}
+    div[role="radiogroup"] label:has(input:checked) {{ border: 2px solid {accent_colour};
+        background: linear-gradient(90deg, white, {accent_colour}25); transform: translateX(3px); }}
+    div[role="radiogroup"] label p {{ font-size: 1.02rem !important; }}
     [data-baseweb="select"] > div {{ border: 3px solid {accent_colour} !important; border-radius: 18px !important;
         font-size: 1.05rem; background: white; }}
-    [data-testid="stSlider"] {{ background: rgba(255,255,255,0.92); border-radius: 18px; padding: 0.4rem 1rem 0.2rem 1rem; }}
+    [data-testid="stSlider"] {{ background: rgba(255,255,255,0.82); border-radius: 16px; padding: 0.28rem 0.75rem 0.1rem; }}
     [role="slider"] {{ background-color: {accent_colour} !important; }}
     audio {{ width: 100%; }}
     .stButton > button {{ border-radius: 999px; border: 3px solid {accent_colour}; font-family: 'Fredoka', sans-serif;
         font-size: 1.1rem; background: white; }}
     [data-testid="stExpander"] {{ background: rgba(255,255,255,0.93); border-radius: 18px; }}
+    @media (max-width: 900px) {{ .taletwinkle-title {{ font-size: clamp(3rem, 13vw, 4.5rem); }}
+        [data-testid="stVerticalBlockBorderWrapper"]:has(.premium-panel-marker) {{ margin-bottom: 0.45rem; }}
+        .story-card {{ font-size: 1.12rem; padding: 1rem; }} }}
     </style>
     {build_floating_emoji_html(floating_emojis=theme_settings["floating_emojis"])}
     """
@@ -422,18 +468,20 @@ def load_story_pipeline(model_name):
 
 
 @st.cache_resource(show_spinner=False)
-def load_male_speech_pipeline(model_name):
-    """
-    Load the Hugging Face text-to-speech pipeline (real male voice, also the offline backup voice) and warm it up.
+def load_piper_voice(model_file):
+    """Download and cache one fast Piper voice checkpoint from Hugging Face.
 
     Parameters:
-        model_name (str): Hugging Face model id.
+        model_file (str): ONNX file path inside the Piper voices repository.
     Returns:
-        Pipeline: the text-to-speech pipeline.
+        PiperVoice: ready local CPU speech model.
     """
-    speech_pipeline = pipeline("text-to-speech", model=model_name, device=-1, token=get_hugging_face_token())
-    speech_pipeline("Hello.")
-    return speech_pipeline
+    from huggingface_hub import hf_hub_download
+    from piper import PiperVoice
+
+    model_path = hf_hub_download(repo_id=LOCAL_SPEECH_MODEL_NAME, filename=model_file)
+    configuration_path = hf_hub_download(repo_id=LOCAL_SPEECH_MODEL_NAME, filename=f"{model_file}.json")
+    return PiperVoice.load(model_path=model_path, config_path=configuration_path, use_cuda=False)
 
 
 @st.cache_resource(show_spinner=False)
@@ -454,7 +502,7 @@ def check_google_voice_available():
 @st.cache_resource(show_spinner=False)
 def get_speech_lock():
     """
-    One shared lock so the local Hugging Face voice model speaks one sentence at a time (thread safety).
+    One shared lock so each local Piper model speaks one sentence at a time (thread safety).
 
     Returns:
         threading.Lock: the lock.
@@ -464,15 +512,22 @@ def get_speech_lock():
 
 def load_all_models():
     """
-    Load and warm up every model when the app starts, so the first child does not wait for downloads.
+    Load and warm independent resources concurrently after the interface is visible.
 
     Returns:
-        dict: caption and story pipelines (with precision), male speech pipeline, Google voice availability.
+        dict: caption/story models, a warmed local Piper fallback, and Google voice availability.
     """
-    return {"caption": load_caption_pipeline(model_name=IMAGE_CAPTION_MODEL_NAME),
-            "story": load_story_pipeline(model_name=STORY_GENERATION_MODEL_NAME),
-            "male_speech": load_male_speech_pipeline(model_name=MALE_SPEECH_MODEL_NAME),
-            "google_voice_available": check_google_voice_available()}
+    with ThreadPoolExecutor(max_workers=4) as model_workers:
+        caption_job = model_workers.submit(load_caption_pipeline, model_name=IMAGE_CAPTION_MODEL_NAME)
+        story_job = model_workers.submit(load_story_pipeline, model_name=STORY_GENERATION_MODEL_NAME)
+        local_speech_job = model_workers.submit(load_piper_voice, model_file=DEFAULT_PIPER_MODEL_FILE)
+        google_check_job = model_workers.submit(check_google_voice_available)
+        return {
+            "caption": caption_job.result(),
+            "story": story_job.result(),
+            "local_speech": local_speech_job.result(),
+            "google_voice_available": google_check_job.result(),
+        }
 
 
 # ---------- 3. Picture functions ----------
@@ -819,7 +874,8 @@ def write_story_live(story_pipeline, image_caption, theme_key, target_word_count
     for use_early_stop in (True, False):
         stream_progress.update({"text": "", "queued_sentences": 0, "problems": []})
         try:
-            with story_slot.container():
+            with story_slot.container(border=True):
+                st.markdown('<div class="live-story-marker"></div>', unsafe_allow_html=True)
                 st.markdown('<span class="word-chip">✍️ Writing your story...</span>', unsafe_allow_html=True)
                 st.write_stream(stream_story_text(story_pipeline=story_pipeline, story_messages=story_messages,
                                                   target_word_count=target_word_count, stream_progress=stream_progress,
@@ -884,63 +940,79 @@ def speak_sentence_with_google(sentence_text, accent_domain):
     return decode_mp3_bytes(mp3_bytes=mp3_buffer.getvalue())
 
 
-def speak_sentence_with_hugging_face(sentence_text, speech_pipeline):
-    """
-    Speak one sentence with the local Hugging Face text-to-speech pipeline (one sentence at a time).
+def speak_sentence_with_piper(sentence_text, model_file):
+    """Speak one sentence locally with a fast Piper ONNX checkpoint from Hugging Face.
 
     Parameters:
         sentence_text (str): text to speak.
-        speech_pipeline (Pipeline): text-to-speech pipeline.
+        model_file (str): selected Piper ONNX file inside ``rhasspy/piper-voices``.
     Returns:
-        tuple(np.ndarray, int): mono samples and sample rate.
+        tuple(np.ndarray, int): mono float samples and model sample rate.
     """
+    selected_voice = load_piper_voice(model_file=model_file)
     with get_speech_lock():
-        speech_output = speech_pipeline(sentence_text)
-    return np.squeeze(speech_output["audio"]).astype(np.float32), int(speech_output["sampling_rate"])
+        generated_chunks = list(selected_voice.synthesize(sentence_text))
+    speech_segments = [np.asarray(chunk.audio_float_array, dtype=np.float32).squeeze()
+                       for chunk in generated_chunks if len(chunk.audio_float_array)]
+    if not speech_segments:
+        raise RuntimeError("Piper returned no speech audio.")
+    return np.concatenate(speech_segments), int(generated_chunks[0].sample_rate)
+
+
+def select_local_model_file(persona_settings):
+    """Return the requested Piper checkpoint or a matching regional fallback."""
+    if persona_settings.get("piper_model_file"):
+        return persona_settings["piper_model_file"]
+    if persona_settings.get("accent_domain") == "co.uk":
+        return DEFAULT_PIPER_MODEL_FILE
+    return "en/en_US/amy/medium/en_US-amy-medium.onnx"
 
 
 def choose_voice_engine(persona_settings, google_voice_available):
     """
-    Decide which engine speaks: the persona's own engine, or the local Hugging Face voice
+    Decide which engine speaks: the persona's own engine, or local Piper
     if Google TTS cannot be reached.
 
     Parameters:
         persona_settings (dict): chosen storyteller voice.
         google_voice_available (bool): result of the start-up check.
     Returns:
-        str: "google" or "hugging_face".
+        str: "google" or "piper".
     """
     if persona_settings["engine"] == "google" and google_voice_available:
         return "google"
-    return "hugging_face"
+    return "piper"
 
 
-def speak_sentence(sentence_text, voice_engine, accent_domain, speech_pipeline):
+def speak_sentence(sentence_text, voice_engine, persona_settings, local_speech_resources):
     """
     Speak one sentence with the chosen engine (called in background threads).
 
     Parameters:
         sentence_text (str): text to speak.
-        voice_engine (str): "google" or "hugging_face".
-        accent_domain (str): Google accent domain.
-        speech_pipeline (Pipeline): Hugging Face voice (used for "hugging_face").
+        voice_engine (str): "google" or "piper".
+        persona_settings (dict): accent, voice pack, and language choices.
+        local_speech_resources: warmed local fallback kept alive by Streamlit's cache.
     Returns:
         tuple(np.ndarray, int): mono samples and sample rate.
     """
     if voice_engine == "google":
-        return speak_sentence_with_google(sentence_text=sentence_text, accent_domain=accent_domain)
-    return speak_sentence_with_hugging_face(sentence_text=sentence_text, speech_pipeline=speech_pipeline)
+        return speak_sentence_with_google(sentence_text=sentence_text,
+                                          accent_domain=persona_settings["accent_domain"])
+    del local_speech_resources  # The selected voice is resolved through the cached loader.
+    return speak_sentence_with_piper(sentence_text=sentence_text,
+                                     model_file=select_local_model_file(persona_settings=persona_settings))
 
 
-def start_speech_queue(voice_engine, accent_domain, speech_pipeline):
+def start_speech_queue(voice_engine, persona_settings, local_speech_resources):
     """
     Create a background worker pool and a function that queues one sentence for speech.
     Google requests run in parallel; the local model runs one sentence at a time.
 
     Parameters:
-        voice_engine (str): "google" or "hugging_face".
-        accent_domain (str): Google accent domain.
-        speech_pipeline (Pipeline): Hugging Face voice.
+        voice_engine (str): "google" or "piper".
+        persona_settings (dict): selected storyteller settings.
+        local_speech_resources: warmed local Piper fallback.
     Returns:
         tuple(ThreadPoolExecutor, dict, function): the pool, sentence->future map, queue function.
     """
@@ -952,8 +1024,9 @@ def start_speech_queue(voice_engine, accent_domain, speech_pipeline):
         """Start speaking this sentence in the background (only once per sentence)."""
         if sentence_text not in speech_jobs:
             speech_jobs[sentence_text] = speech_workers.submit(speak_sentence, sentence_text=sentence_text,
-                                                               voice_engine=voice_engine, accent_domain=accent_domain,
-                                                               speech_pipeline=speech_pipeline)
+                                                               voice_engine=voice_engine,
+                                                               persona_settings=persona_settings,
+                                                               local_speech_resources=local_speech_resources)
 
     return speech_workers, speech_jobs, queue_sentence_for_speech
 
@@ -1087,7 +1160,8 @@ def assemble_narration(sentence_clips, persona_settings, voice_speed):
     return convert_samples_to_wav_bytes(audio_samples=voiced_samples, sample_rate=sample_rate), len(voiced_samples) / sample_rate
 
 
-def collect_sentence_clips(story_sentences, speech_jobs, queue_sentence_for_speech, speech_pipeline):
+def collect_sentence_clips(story_sentences, speech_jobs, queue_sentence_for_speech,
+                           local_speech_resources, persona_settings):
     """
     Wait for every sentence of the final story to be spoken (most are already finished in the background).
     If any online sentence fails, the whole story is re-spoken with the local Hugging Face voice.
@@ -1096,7 +1170,8 @@ def collect_sentence_clips(story_sentences, speech_jobs, queue_sentence_for_spee
         story_sentences (list[str]): sentences of the final story.
         speech_jobs (dict): sentence -> future from start_speech_queue.
         queue_sentence_for_speech (function): starts speech for a sentence not yet queued.
-        speech_pipeline (Pipeline): Hugging Face voice for the fallback.
+        local_speech_resources: warmed Piper fallback kept alive by Streamlit's cache.
+        persona_settings (dict): selected or region-matched voice settings.
     Returns:
         tuple(list, bool): clips in order, True if the fallback voice was used.
     """
@@ -1105,7 +1180,9 @@ def collect_sentence_clips(story_sentences, speech_jobs, queue_sentence_for_spee
     try:
         return [speech_jobs[story_sentence].result(timeout=60) for story_sentence in story_sentences], False
     except Exception:
-        return [speak_sentence_with_hugging_face(sentence_text=story_sentence, speech_pipeline=speech_pipeline)
+        del local_speech_resources
+        fallback_model_file = select_local_model_file(persona_settings=persona_settings)
+        return [speak_sentence_with_piper(sentence_text=story_sentence, model_file=fallback_model_file)
                 for story_sentence in story_sentences], True
 
 
@@ -1126,10 +1203,12 @@ def create_narration_for_story(story_text, persona_settings, voice_speed, loaded
     voice_engine = choose_voice_engine(persona_settings=persona_settings,
                                        google_voice_available=loaded_models["google_voice_available"])
     speech_workers, speech_jobs, queue_sentence_for_speech = start_speech_queue(
-        voice_engine=voice_engine, accent_domain=persona_settings["accent_domain"], speech_pipeline=loaded_models["male_speech"])
+        voice_engine=voice_engine, persona_settings=persona_settings,
+        local_speech_resources=loaded_models["local_speech"])
     sentence_clips, used_fallback_voice = collect_sentence_clips(
         story_sentences=split_text_into_sentences(story_text=story_text), speech_jobs=speech_jobs,
-        queue_sentence_for_speech=queue_sentence_for_speech, speech_pipeline=loaded_models["male_speech"])
+        queue_sentence_for_speech=queue_sentence_for_speech,
+        local_speech_resources=loaded_models["local_speech"], persona_settings=persona_settings)
     speech_workers.shutdown(wait=False)
     wav_bytes, audio_seconds = assemble_narration(sentence_clips=sentence_clips, persona_settings=persona_settings,
                                                   voice_speed=voice_speed)
@@ -1143,17 +1222,18 @@ def describe_voice_engine(voice_engine, persona_settings, used_fallback_voice):
     Describe which engine produced the voice (shown in the grown-ups panel).
 
     Parameters:
-        voice_engine (str): "google" or "hugging_face".
+        voice_engine (str): "google" or "piper".
         persona_settings (dict): chosen storyteller voice.
         used_fallback_voice (bool): True if the backup voice was needed.
     Returns:
         str: description.
     """
-    if used_fallback_voice or (voice_engine == "hugging_face" and persona_settings["engine"] == "google"):
-        return f"{MALE_SPEECH_MODEL_NAME} (backup: Google TTS unreachable)"
+    if used_fallback_voice or (voice_engine == "piper" and persona_settings["engine"] == "google"):
+        fallback_model_file = select_local_model_file(persona_settings=persona_settings)
+        return f"{LOCAL_SPEECH_MODEL_NAME} ({fallback_model_file}; local fallback because Google TTS was unavailable)"
     if voice_engine == "google":
         return f"Google TTS (gTTS, accent domain '{persona_settings['accent_domain']}')"
-    return f"{MALE_SPEECH_MODEL_NAME} (Hugging Face pipeline)"
+    return f"{LOCAL_SPEECH_MODEL_NAME} ({persona_settings['piper_model_file']}; local Hugging Face ONNX model)"
 
 
 @st.cache_data(show_spinner=False, max_entries=40)
@@ -1180,7 +1260,8 @@ def create_greeting_audio(voice_key, voice_speed):
 
 
 # ---------- 7. Complete picture -> story -> voice run ----------
-def create_story_and_voice(loaded_models, picture, theme_key, target_word_count, persona_settings, voice_speed, story_slot):
+def create_story_and_voice(loaded_models, picture, theme_key, target_word_count, persona_settings,
+                           voice_speed, story_slot, caption_slot):
     """
     Run all three stages for a new picture: caption, live story writing with background speech, narration.
 
@@ -1192,6 +1273,7 @@ def create_story_and_voice(loaded_models, picture, theme_key, target_word_count,
         persona_settings (dict): chosen storyteller voice.
         voice_speed (float): chosen speed.
         story_slot (st.empty): placeholder where the story appears.
+        caption_slot (st.empty): area directly below the picture for the generated caption.
     Returns:
         tuple(dict, dict): story_result and narration_result.
     """
@@ -1200,11 +1282,13 @@ def create_story_and_voice(loaded_models, picture, theme_key, target_word_count,
     picture_caption, caption_seconds = describe_picture(
         caption_pipeline=loaded_models["caption"]["pipeline"],
         picture=prepare_image_for_model(picture=picture, maximum_side_pixels=MODEL_INPUT_IMAGE_SIZE))
+    show_caption_card(caption_slot=caption_slot, picture_caption=picture_caption)
 
     voice_engine = choose_voice_engine(persona_settings=persona_settings,
                                        google_voice_available=loaded_models["google_voice_available"])
     speech_workers, speech_jobs, queue_sentence_for_speech = start_speech_queue(
-        voice_engine=voice_engine, accent_domain=persona_settings["accent_domain"], speech_pipeline=loaded_models["male_speech"])
+        voice_engine=voice_engine, persona_settings=persona_settings,
+        local_speech_resources=loaded_models["local_speech"])
     story_generation = write_story_live(story_pipeline=loaded_models["story"]["pipeline"], image_caption=picture_caption,
                                         theme_key=theme_key, target_word_count=target_word_count, story_slot=story_slot,
                                         queue_sentence_for_speech=queue_sentence_for_speech)
@@ -1213,7 +1297,8 @@ def create_story_and_voice(loaded_models, picture, theme_key, target_word_count,
 
     sentence_clips, used_fallback_voice = collect_sentence_clips(
         story_sentences=split_text_into_sentences(story_text=story_generation["story"]), speech_jobs=speech_jobs,
-        queue_sentence_for_speech=queue_sentence_for_speech, speech_pipeline=loaded_models["male_speech"])
+        queue_sentence_for_speech=queue_sentence_for_speech,
+        local_speech_resources=loaded_models["local_speech"], persona_settings=persona_settings)
     speech_workers.shutdown(wait=False)
     wav_bytes, audio_seconds = assemble_narration(sentence_clips=sentence_clips, persona_settings=persona_settings,
                                                   voice_speed=voice_speed)
@@ -1239,14 +1324,16 @@ def render_theme_picker():
     Returns:
         str: the selected theme key.
     """
-    st.markdown('<div class="panel-card"><p class="panel-title">🎨 Pick a story world</p></div>', unsafe_allow_html=True)
-    selected_theme_key = st.radio("Story world", options=list(STORY_THEMES.keys()),
-                                  format_func=lambda theme_key: STORY_THEMES[theme_key]["label"],
-                                  key="theme_choice", label_visibility="collapsed")
-    chosen_theme = STORY_THEMES[selected_theme_key]
-    st.markdown(f'<div class="panel-card"><div class="mascot">{chosen_theme["mascot"]}</div>'
-                f'<div class="world-name">Welcome to <b>{chosen_theme["world_name"]}</b>!</div></div>',
-                unsafe_allow_html=True)
+    with st.container(border=True):
+        st.markdown('<div class="premium-panel-marker"></div>', unsafe_allow_html=True)
+        st.markdown('<div class="panel-card"><p class="panel-title">🎨 Pick a story world</p></div>', unsafe_allow_html=True)
+        selected_theme_key = st.radio("Story world", options=list(STORY_THEMES.keys()),
+                                      format_func=lambda theme_key: STORY_THEMES[theme_key]["label"],
+                                      key="theme_choice", label_visibility="collapsed")
+        chosen_theme = STORY_THEMES[selected_theme_key]
+        st.markdown(f'<div class="panel-card"><div class="mascot">{chosen_theme["mascot"]}</div>'
+                    f'<div class="world-name">Welcome to <b>{chosen_theme["world_name"]}</b>!</div></div>',
+                    unsafe_allow_html=True)
     return selected_theme_key
 
 
@@ -1257,22 +1344,24 @@ def render_story_controls():
     Returns:
         tuple(int, float, str): target word count, voice speed, voice key.
     """
-    st.markdown('<div class="panel-card"><p class="panel-title">📏 Story size</p></div>', unsafe_allow_html=True)
-    target_word_count = st.slider("Story size (words)", min_value=MINIMUM_STORY_WORDS, max_value=MAXIMUM_STORY_WORDS,
-                                  value=DEFAULT_STORY_WORDS, step=STORY_WORD_STEP, format="%d words",
-                                  key="story_size_choice", label_visibility="collapsed")
-    st.markdown('<div class="panel-card"><p class="panel-title">🐢 Voice speed 🐇</p></div>', unsafe_allow_html=True)
-    voice_speed = st.select_slider("Voice speed", options=VOICE_SPEED_CHOICES, value=DEFAULT_VOICE_SPEED,
-                                   format_func=lambda speed_value: f"{speed_value:.2f}x",
-                                   key="voice_speed_choice", label_visibility="collapsed")
-    st.markdown('<div class="panel-card"><p class="panel-title">🗣️ Storyteller voice</p></div>', unsafe_allow_html=True)
-    selected_voice_key = st.selectbox("Storyteller voice", options=list(VOICE_PERSONAS.keys()),
-                                      index=list(VOICE_PERSONAS.keys()).index(DEFAULT_VOICE_KEY),
-                                      format_func=lambda voice_key: VOICE_PERSONAS[voice_key]["label"],
-                                      key="voice_choice", label_visibility="collapsed")
-    chosen_persona = VOICE_PERSONAS[selected_voice_key]
-    st.markdown(f'<div class="panel-card"><div class="mascot">{chosen_persona["avatar"]}</div>'
-                f'<div class="world-name">{html.escape(chosen_persona["about"])}</div></div>', unsafe_allow_html=True)
+    with st.container(border=True):
+        st.markdown('<div class="premium-panel-marker"></div>', unsafe_allow_html=True)
+        st.markdown('<div class="panel-card"><p class="panel-title">📏 Story size</p></div>', unsafe_allow_html=True)
+        target_word_count = st.slider("Story size (words)", min_value=MINIMUM_STORY_WORDS, max_value=MAXIMUM_STORY_WORDS,
+                                      value=DEFAULT_STORY_WORDS, step=STORY_WORD_STEP, format="%d words",
+                                      key="story_size_choice", label_visibility="collapsed")
+        st.markdown('<div class="panel-card"><p class="panel-title">🐢 Voice speed 🐇</p></div>', unsafe_allow_html=True)
+        voice_speed = st.select_slider("Voice speed", options=VOICE_SPEED_CHOICES, value=DEFAULT_VOICE_SPEED,
+                                       format_func=lambda speed_value: f"{speed_value:.2f}x",
+                                       key="voice_speed_choice", label_visibility="collapsed")
+        st.markdown('<div class="panel-card"><p class="panel-title">🗣️ Storyteller voice</p></div>', unsafe_allow_html=True)
+        selected_voice_key = st.selectbox("Storyteller voice", options=list(VOICE_PERSONAS.keys()),
+                                          index=list(VOICE_PERSONAS.keys()).index(DEFAULT_VOICE_KEY),
+                                          format_func=lambda voice_key: VOICE_PERSONAS[voice_key]["label"],
+                                          key="voice_choice", label_visibility="collapsed")
+        chosen_persona = VOICE_PERSONAS[selected_voice_key]
+        st.markdown(f'<div class="panel-card"><div class="mascot">{chosen_persona["avatar"]}</div>'
+                    f'<div class="world-name">{html.escape(chosen_persona["about"])}</div></div>', unsafe_allow_html=True)
     return target_word_count, voice_speed, selected_voice_key
 
 
@@ -1285,6 +1374,13 @@ def show_placeholder(display_slot, placeholder_text):
         placeholder_text (str): the message.
     """
     display_slot.markdown(f'<div class="placeholder-card">{placeholder_text}</div>', unsafe_allow_html=True)
+
+
+def show_caption_card(caption_slot, picture_caption):
+    """Show the generated picture description immediately below the uploaded image."""
+    safe_caption = html.escape(picture_caption)
+    caption_slot.markdown(f'<div class="caption-card">👀 <b>I can see:</b> {safe_caption}</div>',
+                          unsafe_allow_html=True)
 
 
 def show_story_card(story_slot, story_text, word_count):
@@ -1356,12 +1452,9 @@ def main():
     apply_page_style(theme_settings=STORY_THEMES[current_theme_key])
     render_header()
 
-    # Load and warm up every model once (cached for every later visitor).
-    with st.spinner("🪄 Waking up the story machine... (only the first time)"):
-        loaded_models = load_all_models()
-
     # ----- INPUT PART -----
-    left_column, centre_column, right_column = st.columns([1.0, 2.2, 1.15], gap="large")
+    left_column, centre_column, right_column = st.columns([1.05, 2.45, 1.20], gap="large",
+                                                          vertical_alignment="top")
     with left_column:
         selected_theme_key = render_theme_picker()
     with right_column:
@@ -1371,10 +1464,17 @@ def main():
         uploaded_picture_file = st.file_uploader("📸 Drop a picture here, or tap to choose one!",
                                                  type=ACCEPTED_PICTURE_TYPES, key="picture_upload")
         image_slot = st.empty()
-        story_slot = st.empty()
-        sound_label_slot = st.empty()
-        sound_slot = st.empty()
-        extras_area = st.container()
+        caption_slot = st.empty()
+
+    # Full-width output keeps the complete story and audio easy to read without squeezing either panel.
+    story_slot = st.empty()
+    sound_label_slot = st.empty()
+    sound_slot = st.empty()
+    extras_area = st.container()
+
+    # Models warm only after the complete interface has rendered, and independent resources load concurrently.
+    with st.spinner("🪄 Waking up the story machine... (only the first time)"):
+        loaded_models = load_all_models()
 
     # ----- PROCESS PART -----
     story_result = None
@@ -1388,8 +1488,8 @@ def main():
                 st.error("😕 Oops! That file is not a picture I can open. Please try a JPG or PNG picture.")
     if picture is not None:
         # Show the picture first (scaled to the preferred size), so the child sees it straight away.
-        image_slot.image(resize_image_for_display(picture=picture, longest_side_pixels=PREFERRED_IMAGE_DISPLAY_SIZE),
-                         caption="Your picture")
+        image_slot.image(resize_image_for_display(picture=picture, longest_side_pixels=PREFERRED_IMAGE_DISPLAY_SIZE))
+        show_placeholder(display_slot=caption_slot, placeholder_text="👀 Looking closely at your picture...")
         story_request_key = (calculate_picture_fingerprint(picture_bytes=uploaded_picture_file.getvalue()),
                              selected_theme_key, target_word_count, st.session_state["story_version"])
         narration_request_key = (story_request_key, selected_voice_key, voice_speed)
@@ -1401,7 +1501,7 @@ def main():
                 new_story_result, new_narration_result = create_story_and_voice(
                     loaded_models=loaded_models, picture=picture, theme_key=selected_theme_key,
                     target_word_count=target_word_count, persona_settings=persona_settings,
-                    voice_speed=voice_speed, story_slot=story_slot)
+                    voice_speed=voice_speed, story_slot=story_slot, caption_slot=caption_slot)
                 st.session_state.update({"story_request_key": story_request_key, "story_result": new_story_result,
                                          "narration_request_key": narration_request_key,
                                          "narration_result": new_narration_result, "celebrate_new_story": True})
@@ -1425,12 +1525,14 @@ def main():
                     st.warning("🔇 The storyteller lost their voice. Please try another voice.")
         if st.session_state["story_request_key"] == story_request_key:
             story_result = st.session_state["story_result"]
+            show_caption_card(caption_slot=caption_slot, picture_caption=story_result["caption"])
             if st.session_state["narration_request_key"] == narration_request_key:
                 narration_result = st.session_state["narration_result"]
 
     # ----- OUTPUT PART -----
     if picture is None:
         show_placeholder(display_slot=image_slot, placeholder_text="🖼️ Your picture will pop up here!")
+        show_placeholder(display_slot=caption_slot, placeholder_text="👀 I will describe your picture here.")
         show_placeholder(display_slot=story_slot, placeholder_text="📖 Your story will appear here...")
     elif story_result is not None:
         show_story_card(story_slot=story_slot, story_text=story_result["story"], word_count=story_result["word_count"])
