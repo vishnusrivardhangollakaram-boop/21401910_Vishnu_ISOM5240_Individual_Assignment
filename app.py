@@ -26,12 +26,12 @@ Model selection (10 candidates per stage, 10 test images, see README.md and benc
         Salesforce/blip-image-captioning-large, microsoft/git-base-coco, microsoft/git-large-coco, microsoft/git-base,
         microsoft/git-base-textcaps, microsoft/git-large-textcaps, microsoft/git-large,
         nlpconnect/vit-gpt2-image-captioning, ydshieh/vit-gpt2-coco-en
-    Stage 2 story generation ("text-generation"): HuggingFaceTB/SmolLM2-360M-Instruct (chosen: smallest model that
-        still follows the picture/theme/length instructions, fastest on Streamlit Cloud's 2 CPU cores),
-        Qwen/Qwen3-0.6B (best story quality in the focused benchmark, slower), Qwen/Qwen2.5-0.5B-Instruct,
-        Qwen/Qwen2.5-1.5B-Instruct, HuggingFaceTB/SmolLM2-135M-Instruct, HuggingFaceTB/SmolLM2-1.7B-Instruct,
-        TinyLlama/TinyLlama-1.1B-Chat-v1.0, google/flan-t5-base, google/flan-t5-small,
-        roneneldan/TinyStories-Instruct-33M
+    Stage 2 story generation ("text-generation"): Qwen/Qwen2.5-0.5B-Instruct (chosen: best balance - 2nd in story
+        quality, 100% length compliance, less memory than Qwen3 so it runs reliably on Streamlit Cloud),
+        Qwen/Qwen3-0.6B (best story quality, more memory and slower on Streamlit Cloud), HuggingFaceTB/SmolLM2-360M-Instruct
+        (faster, weaker stories), Qwen/Qwen2.5-1.5B-Instruct, HuggingFaceTB/SmolLM2-135M-Instruct,
+        HuggingFaceTB/SmolLM2-1.7B-Instruct, TinyLlama/TinyLlama-1.1B-Chat-v1.0, google/flan-t5-base,
+        google/flan-t5-small, roneneldan/TinyStories-Instruct-33M
     Stage 3 text-to-speech: gTTS UK/US/Australian/Indian English (chosen: familiar female voices, fast),
         rhasspy/piper-voices (chosen: sub-second local male and child-style narration), microsoft/speecht5_tts,
         suno/bark-small, hexgrad/Kokoro-82M, kakao-enterprise/vits-ljs, kakao-enterprise/vits-vctk,
@@ -86,14 +86,14 @@ APP_NAME = "TaleTwinkle"
 APP_TAGLINE = "Drop in a picture. Hear a little world come alive."
 
 IMAGE_CAPTION_MODEL_NAME = "Salesforce/blip-image-captioning-base"
-STORY_GENERATION_MODEL_NAME = "HuggingFaceTB/SmolLM2-360M-Instruct"   # also supported: Qwen/Qwen2.5-0.5B-Instruct, Qwen/Qwen3-0.6B
+STORY_GENERATION_MODEL_NAME = "Qwen/Qwen2.5-0.5B-Instruct"   # also supported: Qwen/Qwen3-0.6B, HuggingFaceTB/SmolLM2-360M-Instruct
 BFLOAT16_STORY_MODELS = ("Qwen/", "HuggingFaceTB/SmolLM2-")     # loaded directly in bfloat16 (no float32 memory spike)
 LOCAL_SPEECH_MODEL_NAME = "rhasspy/piper-voices"
 DEFAULT_PIPER_MODEL_FILE = "en/en_GB/alba/medium/en_GB-alba-medium.onnx"
 SHRINK_MODELS_WITH_INT8 = False             # False: the caption model loads in ~3 s instead of ~14 s (int8 conversion skipped)
-KEEP_MODELS_LOADED = False                  # False: only one model in memory at a time (both together reach ~3 GB,
-                                            # Streamlit's limit, and the story then slows down badly)
-MEMORY_SAFETY_LIMIT_MB = 3100               # above this, models are released after use (both models = about 2.9 GB)
+KEEP_MODELS_LOADED = True                   # True: BLIP + Qwen2.5 load once at start-up and are reused (saves ~5 s per
+                                            # story); the safety net below releases them if memory gets too high.
+MEMORY_SAFETY_LIMIT_MB = 2600               # above this, models are released after use (automatic safety net)
 DEFAULT_CPU_THREADS = 2                     # Streamlit Community Cloud gives each app about 2 CPU cores
 LOGGER = logging.getLogger(APP_NAME)
 if not LOGGER.handlers:
@@ -101,7 +101,7 @@ if not LOGGER.handlers:
 
 MINIMUM_STORY_WORDS = 50
 MAXIMUM_STORY_WORDS = 100
-DEFAULT_STORY_WORDS = 75
+DEFAULT_STORY_WORDS = 50                    # shortest allowed story by default = fastest story for young children
 STORY_WORD_STEP = 5
 STORY_WORD_MARGIN = 10                      # the story may run up to 10 words over the slider value (max 100)
 STORY_TOKENS_PER_WORD = 1.45                # token budget per word, so generation stops near the wanted length
