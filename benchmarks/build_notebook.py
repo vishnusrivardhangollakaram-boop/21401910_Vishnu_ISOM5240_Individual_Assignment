@@ -35,7 +35,7 @@ expected-object lists in `test_images/test_image_ground_truth.csv`:
 |---|---|---|
 | 1. Image captioning | `image-to-text` | **Speed** (seconds per image) and **accuracy** (% of expected objects named in the caption + CLIP image-text score) |
 | 2. Story generation | `text-generation` | **Image relevance**, **theme match**, **kid suitability** (reading grade + safety), **length compliance**, speed |
-| 3. Text-to-speech | `text-to-speech` / gTTS / Kokoro | **Audio quality**: intelligibility (Whisper word error rate), speed, real-time factor + your listening score |
+| 3. Text-to-speech | `text-to-speech` / gTTS / Piper / Kokoro | **Audio quality**: intelligibility (Whisper word error rate), speed, real-time factor + your listening score |
 
 ### How to run
 1. **Runtime → Change runtime type → CPU** (keep the default CPU). Streamlit Cloud runs on CPU, so CPU timings are the honest ones.
@@ -59,7 +59,8 @@ add_code_cell(r"""
 # Install the same library versions the Streamlit app uses (transformers < 5.0, as in the course).
 %pip -q install "transformers>=4.45.0,<5.0" "sentence-transformers>=3.0.0,<6.0" "datasets>=2.20.0,<5.0" \
     "textstat>=0.7.3,<1.0" "jiwer>=3.0.0,<5.0" "gTTS>=2.5.0,<3.0" "soundfile>=0.12.1,<1.0" \
-    "kokoro>=0.9.4,<1.0" "pyttsx3>=2.90,<3.0" "openpyxl>=3.1.0,<4.0" "psutil>=5.9.0,<8.0"
+    "kokoro>=0.9.4,<1.0" "piper-tts>=1.8.0,<2.0" "onnxruntime>=1.20.0,<2.0" \
+    "pyttsx3>=2.90,<3.0" "openpyxl>=3.1.0,<4.0" "psutil>=5.9.0,<8.0"
 # espeak-ng is needed by Kokoro (phonemizer fallback) and pyttsx3 on Linux.
 !apt-get -qq install -y espeak-ng > /dev/null 2>&1
 """)
@@ -615,7 +616,10 @@ Each engine speaks the same stories (written by the best story model). Measured:
 * **intelligibility** = 1 − word error rate when `openai/whisper-base.en` transcribes the audio back to text
 * **your listening score**: open `tts_samples/` and rate each voice 1–5 in the Excel sheet (clarity, warmth, fit for kids)
 
-gTTS needs internet (Streamlit Cloud has it). Kokoro-82M is a Hugging Face model run through its own `kokoro` library.
+gTTS needs internet (Streamlit Cloud has it). Piper and Kokoro use Hugging Face-hosted voice checkpoints.
+The production app selects Piper because its quantized ONNX voices are much faster on CPU while still offering
+distinct male/female checkpoints. Child-style choices use a clearly labelled pitch effect rather than claiming
+that an adult training voice is a real child.
 """)
 add_code_cell(r"""
 import jiwer
@@ -652,6 +656,19 @@ def audio_from_kokoro(story_text, voice_name):
         KOKORO_PIPELINES[language_code] = KPipeline(lang_code=language_code)
     audio_chunks = [np.asarray(chunk_audio) for _, _, chunk_audio in KOKORO_PIPELINES[language_code](story_text, voice=voice_name, speed=1.0)]
     return np.concatenate(audio_chunks), 24000
+
+
+PIPER_VOICES = {}
+def audio_from_piper(story_text, model_file):
+    '''Synthesize speech locally with a Piper checkpoint hosted on Hugging Face.'''
+    from huggingface_hub import hf_hub_download
+    from piper import PiperVoice
+    if model_file not in PIPER_VOICES:
+        model_path = hf_hub_download(repo_id="rhasspy/piper-voices", filename=model_file)
+        config_path = hf_hub_download(repo_id="rhasspy/piper-voices", filename=f"{model_file}.json")
+        PIPER_VOICES[model_file] = PiperVoice.load(model_path=model_path, config_path=config_path, use_cuda=False)
+    chunks = list(PIPER_VOICES[model_file].synthesize(story_text))
+    return np.concatenate([chunk.audio_float_array for chunk in chunks]), chunks[0].sample_rate
 
 
 HF_TTS_PIPELINES = {}
@@ -692,6 +709,8 @@ TTS_CANDIDATES = [
     {"engine": "gTTS US English (com)",             "synthesize": lambda text: audio_from_gtts(story_text=text, top_level_domain="com")},
     {"engine": "gTTS Australian English (com.au)",  "synthesize": lambda text: audio_from_gtts(story_text=text, top_level_domain="com.au")},
     {"engine": "gTTS Indian English (co.in)",       "synthesize": lambda text: audio_from_gtts(story_text=text, top_level_domain="co.in")},
+    {"engine": "rhasspy/piper-voices US male Ryan", "synthesize": lambda text: audio_from_piper(story_text=text, model_file="en/en_US/ryan/medium/en_US-ryan-medium.onnx")},
+    {"engine": "rhasspy/piper-voices UK female Alba", "synthesize": lambda text: audio_from_piper(story_text=text, model_file="en/en_GB/alba/medium/en_GB-alba-medium.onnx")},
     {"engine": "hexgrad/Kokoro-82M US female (af_heart)", "synthesize": lambda text: audio_from_kokoro(story_text=text, voice_name="af_heart")},
     {"engine": "hexgrad/Kokoro-82M UK female (bf_emma)",  "synthesize": lambda text: audio_from_kokoro(story_text=text, voice_name="bf_emma")},
     {"engine": "hexgrad/Kokoro-82M UK male (bm_george)",  "synthesize": lambda text: audio_from_kokoro(story_text=text, voice_name="bm_george")},
