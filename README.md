@@ -9,17 +9,17 @@ TaleTwinkle is a Streamlit application for children aged 3–10. A child drops i
 | Stage | Selected model | Code in this submission | Why selected |
 |---|---|---|---|
 | Image → caption | `Salesforce/blip-image-captioning-base` | `pipeline("image-to-text")` | Best measured accuracy/speed balance on the 10 project images |
-| Caption → story | `Qwen/Qwen2.5-0.5B-Instruct` | `pipeline("text-generation")` | Follows image, theme, safety and word-count instructions much better than TinyStories |
+| Caption → story | `Qwen/Qwen3-0.6B` | `pipeline("text-generation")` with chat messages and non-thinking mode | Ranked first in the focused five-image quality/speed benchmark |
 | Story → local speech | `rhasspy/piper-voices` | Piper ONNX checkpoints downloaded from Hugging Face | Distinct voices, local fallback and very fast CPU synthesis |
 | Story → regional speech | gTTS | UK, US, Australian and Indian English | Familiar regional voices; Piper automatically takes over if the service is unavailable |
 
 Model cards and inference documentation:
 
 - [BLIP image captioning model card](https://huggingface.co/Salesforce/blip-image-captioning-base) — used through the Transformers `image-to-text` pipeline.
-- [Qwen2.5-0.5B-Instruct model card](https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct) — used through the Transformers `text-generation` pipeline.
+- [Qwen3-0.6B model card](https://huggingface.co/Qwen/Qwen3-0.6B) — used through the Transformers `text-generation` pipeline with `enable_thinking=False`.
 - [Piper voices repository](https://huggingface.co/rhasspy/piper-voices) — ONNX voice checkpoints loaded by `piper-tts`.
 
-`roneneldan/TinyStories-33M` was considered and benchmarked, but it was not selected. It is fast, yet it frequently ignores the image/theme instructions and encouraged repetitive template text. The current code therefore keeps Qwen and does not add the repeated “Once upon a time, the picture came alive” prefix.
+`roneneldan/TinyStories-33M` was considered and benchmarked, but it was not selected. It is fast, yet it frequently ignores the image/theme instructions and encouraged repetitive template text. Qwen3 does not add the repeated “Once upon a time, the picture came alive” prefix.
 
 ## Business and user requirements
 
@@ -32,7 +32,7 @@ Model cards and inference documentation:
 | Theme choice | Fairy Tale, Space Quest, Gentle Mystery, Jungle Adventure, Silly Poem and Ocean Magic |
 | Attractive, easy UI | Premium themed side panels sit level with the image; the live and final story use wide white reading cards |
 | Image, story and audio always visible | Full-width output area below the picture/caption keeps the story and audio player on screen |
-| Fast response | Cached/warmed models, dynamic int8 quantisation, streamed story words, early stopping and background sentence narration |
+| Fast, memory-safe response | BLIP runs and is released first; Qwen and the required Piper voice then load together, story words stream, and Stage 2/3 resources are released after each run |
 | Audio control | 0.5×–2× speed slider; pitch-preserving WSOLA processing; automatic playback after generation |
 | Reliable deployment | Explicit minimum/maximum dependency ranges, system packages, local speech fallback and automated offline tests |
 | No unwanted music | There is no background music code, package or audio asset |
@@ -44,25 +44,20 @@ Model cards and inference documentation:
 - Right premium panel: story length, voice speed and storyteller.
 - Below: a full-width live white story box, final story card, audio player and “Tell me another story” control.
 
-The default is **👩‍🏫 Story Lady Lily (British)**. The voice list also includes:
-
-- Cartoon companions: 🦜 Polly, 🐱 Whiskers and 🤖 Robo Beep.
-- Regional women: 👩 Aunt Amy, 👩 Aunty Chloe and 👩‍🏫 Teacher Priya.
-- Four distinct local male checkpoints: 🧭 Captain Finn (Ryan), 🎙️ Jolly Joe, 🦸 Hero Bryce and 🎩 Sir Alan.
-- Two clearly labelled child-style effects: 🧒 Buddy Ben and 👧 Giggle Grace. These are pitch-adjusted voices, not falsely represented as recordings of children.
-
-The disliked **Uncle Max** and **Bruno the Bear** choices have been removed.
+The final order is **👩‍🏫 Story Lady Lily**, **🦜 Polly**, **🤖 Robo Beep**, **👧 Giggle Grace**, **🧭 Captain Finn**, **👩 Aunty Chloe**, **🎩 Sir Alan**, **🐱 Whiskers**, **👩 Aunt Amy** and **👩‍🏫 Teacher Priya**. Giggle Grace is transparently labelled as a pitch-adjusted child-style effect, not a recording of a child. Uncle Max, Bruno the Bear, Jolly Joe, Hero Bryce and Buddy Ben have been removed.
 
 ## Processing flow
 
 1. The uploaded image is opened safely, phone rotation is corrected and transparency is placed on white.
 2. A display copy is resized to a 460 px longest side. Small images scale up; large images scale down.
-3. BLIP produces a caption from a separate model copy no larger than 512 px.
+3. BLIP produces a caption from a separate model copy no larger than 512 px, then its in-memory resource is released.
 4. Caption-cleaning removes common benchmark artefacts such as repeated words, “illustration” and “painting of”.
-5. Qwen receives the caption, chosen world, child-safe writing rules and target word count.
-6. Story tokens stream into a white reading card. Each completed sentence is queued for speech in the background.
-7. The final output is checked for length, complete punctuation and unsafe words. A safe backup story is available if generation fails.
-8. Speech clips are joined, voice speed/effects are applied, loudness is normalised and a WAV player autoplays.
+5. Only after captioning, Qwen and the required local Piper voice load concurrently. Google voices do not load Piper unless fallback is needed.
+6. Qwen receives the caption, chosen world, child-safe writing rules and target word count.
+7. Story tokens stream into an opaque white reading card. Each completed sentence is queued for speech in the background.
+8. The final output is checked for length, complete punctuation and unsafe words. A safe backup story is available if generation fails.
+9. Speech clips are joined, voice speed/effects are applied, loudness is normalised and a WAV player autoplays.
+10. Stage 2 and Stage 3 model resources are explicitly released after success or failure. Python logging records stages, timings and exceptions without logging private image/audio data.
 
 ## Model comparison
 
@@ -87,20 +82,34 @@ Caption accuracy is the percentage of expected objects named. Overall score weig
 
 ### Story candidates (10)
 
-The notebook compares:
+The current notebook configuration compares:
 
-1. `Qwen/Qwen2.5-0.5B-Instruct` ✅
-2. `Qwen/Qwen2.5-1.5B-Instruct`
-3. `HuggingFaceTB/SmolLM2-135M-Instruct`
-4. `HuggingFaceTB/SmolLM2-360M-Instruct`
-5. `HuggingFaceTB/SmolLM2-1.7B-Instruct`
-6. `TinyLlama/TinyLlama-1.1B-Chat-v1.0`
-7. `google/flan-t5-base`
-8. `google/flan-t5-small`
-9. `roneneldan/TinyStories-33M`
+1. `Qwen/Qwen3-0.6B` ✅
+2. `Qwen/Qwen2.5-0.5B-Instruct`
+3. `Qwen/Qwen2.5-1.5B-Instruct`
+4. `HuggingFaceTB/SmolLM2-135M-Instruct`
+5. `HuggingFaceTB/SmolLM2-360M-Instruct`
+6. `HuggingFaceTB/SmolLM2-1.7B-Instruct`
+7. `TinyLlama/TinyLlama-1.1B-Chat-v1.0`
+8. `google/flan-t5-base`
+9. `google/flan-t5-small`
 10. `roneneldan/TinyStories-Instruct-33M`
 
-The kids’ story score weights image relevance (35%), theme match (25%), reading level (20%), safety (10%) and valid length (10%). Qwen 0.5B is selected because it is the smallest practical instruction model that obeys all four prompt constraints while fitting Streamlit Cloud memory after int8 quantisation.
+The kids’ story score weights image relevance (35%), theme match (25%), reading level (20%), safety (10%) and valid length (10%).
+
+The checked-in `run1_initial_screening/story_summary.csv` is retained as the earlier screening evidence. The later `run2_qwen3_focused/` test reused five saved BLIP captions and compared only Qwen3, the current Qwen2.5 model and FLAN-T5-base, as requested; it did not fabricate or rerun results for the remaining models.
+
+### Focused Qwen3 challenger test (5 images)
+
+| Rank | Model | Story quality | Mean time | Median time | Overall |
+|---:|---|---:|---:|---:|---:|
+| 1 | `Qwen/Qwen3-0.6B` ✅ | 62.71% | 11.27 s | 10.14 s | **88.60** |
+| 2 | `Qwen/Qwen2.5-0.5B-Instruct` | 57.79% | 13.68 s | 15.37 s | **80.81** |
+| 3 | `google/flan-t5-base` | 27.98% | 4.84 s | 5.05 s | **55.70** |
+
+Qwen3 is selected because it ranked first on the same 80% relative story-quality / 20% relative-speed rule. It is called as `pipeline(messages, tokenizer_encode_kwargs={"enable_thinking": False})`; Transformers adds the generation prompt automatically for a chat ending in a user message. The measured CPU completion time is still above the desired 3–4 seconds, so the app streams words immediately, narrates completed sentences concurrently and releases Stage 2 after each run. The full method, raw stories and precision experiment are documented in [`benchmarks/run2_qwen3_focused/`](benchmarks/run2_qwen3_focused/README.md).
+
+Model-card research also identified `Qwen/Qwen3.5-0.8B`, `google/gemma-3-270m-it`, `meta-llama/Llama-3.2-1B-Instruct` and `tiiuae/Falcon3-1B-Instruct` as possible future challengers. They are not labelled as benchmark winners because they were not run in this focused test and the larger models increase Streamlit Cloud memory risk.
 
 ### Speech candidates (10+)
 
@@ -116,7 +125,7 @@ Run:
 python tests/run_offline_tests.py
 ```
 
-Current result: **49/49 passed**. The suite does not download models; small stand-ins exercise the app’s functions and complete Streamlit flow.
+Current result: **53/53 passed**. The suite does not download models; small stand-ins exercise the app’s functions and complete Streamlit flow.
 
 Coverage includes:
 
@@ -124,8 +133,9 @@ Coverage includes:
 - caption cleaning, 50/75/100-word limits, poem formatting and safety filtering;
 - no fixed story prefix and safe fallback generation;
 - background sentence queuing and early generation stop;
+- cache limits plus BLIP → cleanup → Qwen/Piper lifecycle ordering;
 - pitch-preserving 0.5×/2× speed and character effects;
-- four male and two child-style voices, with Max/Bear absent;
+- final ten-voice order, with Captain Finn and Sir Alan as the two local male choices and Giggle Grace as the child-style choice;
 - caption below image, white live story panel and story displayed before audio;
 - autoplay, cached reruns, voice-only rerender, theme regeneration and broken-file handling;
 - Google outage → local Piper narration.
@@ -172,7 +182,7 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-The first run downloads the selected Hugging Face models and voice checkpoint. Later runs use the cache.
+The first run downloads the selected Hugging Face files. Later runs reuse Hugging Face's disk cache, while the app deliberately reloads and releases Stage 1/2/3 model objects to remain within Streamlit Cloud RAM limits.
 
 ## Deploy to Streamlit Community Cloud
 
@@ -187,7 +197,7 @@ The first run downloads the selected Hugging Face models and voice checkpoint. L
 - gTTS needs an internet connection and sends story text to its service. Piper is the local fallback.
 - Browser autoplay may require a user interaction; uploading a picture normally supplies that interaction.
 - Child-style voices are transparent audio effects, not real children’s recordings.
-- The first uncached cloud start is slower because model files must download. In-session runs are the relevant performance measure.
+- The first cloud run is slower because model files must download. Later runs avoid downloading again, but model objects are deliberately reloaded from disk to keep RAM bounded.
 - The final public Streamlit URL and manual device/browser checks must be completed after repository deployment.
 
 ## Credits

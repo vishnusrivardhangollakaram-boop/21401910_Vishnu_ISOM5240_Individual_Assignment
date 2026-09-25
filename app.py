@@ -12,9 +12,9 @@ User flow (no button needed):
     4. Stage 3  STORY -> VOICE : each sentence is sent to the storyteller voice IN THE BACKGROUND as soon as it
                                  is finished, so the narration is ready moments after the story, and it plays by itself.
 
-Speed design: every model is loaded AND warmed up once when the app starts (cached), models are shrunk to
-int8 for faster CPU inference, the story streams word by word, generation stops as soon as the story is long
-enough, and speech is produced sentence by sentence in parallel with story writing.
+Speed/memory design: BLIP loads first and is released after captioning; Qwen and only the required Piper voice
+then load together and are released after each run. Models use compact precision where supported, story words
+stream live, generation stops near the requested length, and speech is produced sentence by sentence while Qwen writes.
 
 Business requirement : an engaging, safe, fast storytelling experience that keeps young children interested.
 User requirements    : users are 3-10 years old, so the screen is simple (one drop area, no required buttons),
@@ -26,10 +26,11 @@ Model selection (10 candidates per stage, 10 test images, see README.md and benc
         Salesforce/blip-image-captioning-large, microsoft/git-base-coco, microsoft/git-large-coco, microsoft/git-base,
         microsoft/git-base-textcaps, microsoft/git-large-textcaps, microsoft/git-large,
         nlpconnect/vit-gpt2-image-captioning, ydshieh/vit-gpt2-coco-en
-    Stage 2 story generation ("text-generation"): Qwen/Qwen2.5-0.5B-Instruct (chosen), Qwen/Qwen2.5-1.5B-Instruct,
+    Stage 2 story generation ("text-generation"): Qwen/Qwen3-0.6B (chosen), Qwen/Qwen2.5-0.5B-Instruct,
+        Qwen/Qwen2.5-1.5B-Instruct,
         HuggingFaceTB/SmolLM2-135M-Instruct, HuggingFaceTB/SmolLM2-360M-Instruct, HuggingFaceTB/SmolLM2-1.7B-Instruct,
         TinyLlama/TinyLlama-1.1B-Chat-v1.0, google/flan-t5-base, google/flan-t5-small,
-        roneneldan/TinyStories-33M, roneneldan/TinyStories-Instruct-33M
+        roneneldan/TinyStories-Instruct-33M
     Stage 3 text-to-speech: gTTS UK/US/Australian/Indian English (chosen: familiar female voices, fast),
         rhasspy/piper-voices (chosen: sub-second local male and child-style narration), microsoft/speecht5_tts,
         suno/bark-small, hexgrad/Kokoro-82M, kakao-enterprise/vits-ljs, kakao-enterprise/vits-vctk,
@@ -42,9 +43,11 @@ Acknowledgement: generative AI (Claude) was used as a coding assistant, as permi
 # IMPORT PART
 # ==============================
 import base64
+import gc
 import hashlib
 import html
 import io
+import logging
 import os
 import re
 import shutil
@@ -68,10 +71,13 @@ APP_NAME = "TaleTwinkle"
 APP_TAGLINE = "Drop in a picture. Hear a little world come alive."
 
 IMAGE_CAPTION_MODEL_NAME = "Salesforce/blip-image-captioning-base"
-STORY_GENERATION_MODEL_NAME = "Qwen/Qwen2.5-0.5B-Instruct"
+STORY_GENERATION_MODEL_NAME = "Qwen/Qwen3-0.6B"
 LOCAL_SPEECH_MODEL_NAME = "rhasspy/piper-voices"
 DEFAULT_PIPER_MODEL_FILE = "en/en_GB/alba/medium/en_GB-alba-medium.onnx"
 SHRINK_MODELS_WITH_INT8 = True              # int8 weights: ~3x smaller and faster on Streamlit Cloud's CPU
+LOGGER = logging.getLogger(APP_NAME)
+if not LOGGER.handlers:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 
 MINIMUM_STORY_WORDS = 50
 MAXIMUM_STORY_WORDS = 100
@@ -93,32 +99,32 @@ UNSAFE_STORY_WORDS = ["kill", "killed", "blood", "bloody", "dead", "die", "died"
 
 STORY_THEMES = {
     "fairy_tale": {
-        "label": "🏰 Fairy Tale", "world_name": "Fairy Tale Land", "mascot": "🦄", "background_file": "fairy_tale.png",
+        "label": "🏰 Fairy Tale", "selector_label": "🏰✨  Fairy Tale Land", "world_name": "Fairy Tale Land", "mascot": "🦄", "background_file": "fairy_tale.png",
         "story_instruction": "Make it a magical fairy tale with kind fairies, castles, wishes or talking animals.",
         "floating_emojis": ["✨", "🦄", "🌸", "👑", "🧚", "⭐"], "accent_colour": "#8d4de8",
     },
     "space_quest": {
-        "label": "🚀 Space Quest", "world_name": "Outer Space", "mascot": "👽", "background_file": "space_quest.png",
+        "label": "🚀 Space Quest", "selector_label": "🚀👽  Space Quest", "world_name": "Outer Space", "mascot": "👽", "background_file": "space_quest.png",
         "story_instruction": "Make it a friendly space adventure with rockets, twinkly stars, planets or cute friendly aliens.",
         "floating_emojis": ["⭐", "🪐", "🚀", "👽", "🛸", "🌟"], "accent_colour": "#3f75e8",
     },
     "gentle_mystery": {
-        "label": "🔎 Gentle Mystery", "world_name": "Clue Library", "mascot": "🦉", "background_file": "gentle_mystery.png",
+        "label": "🔎 Gentle Mystery", "selector_label": "🔎🦉  Gentle Mystery", "world_name": "Clue Library", "mascot": "🦉", "background_file": "gentle_mystery.png",
         "story_instruction": "Make it a gentle, cosy mystery where the friends find clues and solve a small puzzle. Nothing scary.",
         "floating_emojis": ["🔍", "🗝️", "🦉", "❓", "📚", "🌙"], "accent_colour": "#8a5a3b",
     },
     "jungle_adventure": {
-        "label": "🦜 Jungle Adventure", "world_name": "Jungle Island", "mascot": "🦁", "background_file": "jungle_adventure.png",
+        "label": "🦜 Jungle Adventure", "selector_label": "🦁🦜  Jungle Adventure", "world_name": "Jungle Island", "mascot": "🦁", "background_file": "jungle_adventure.png",
         "story_instruction": "Make it an exciting jungle adventure with exploring, brave friends, animals and a treasure map.",
         "floating_emojis": ["🗺️", "🧭", "🌴", "🦜", "🦋", "💎"], "accent_colour": "#2f8b57",
     },
     "silly_poem": {
-        "label": "🎵 Silly Poem", "world_name": "Rhyme Garden", "mascot": "🐝", "background_file": "silly_poem.png",
+        "label": "🎵 Silly Poem", "selector_label": "🎵🐝  Silly Poem", "world_name": "Rhyme Garden", "mascot": "🐝", "background_file": "silly_poem.png",
         "story_instruction": "Write it as a short, silly rhyming poem with short lines that rhyme and a giggly surprise.",
         "floating_emojis": ["🎵", "🌈", "🐝", "🌻", "🎈", "🎶"], "accent_colour": "#e05b9d",
     },
     "ocean_magic": {
-        "label": "🐠 Ocean Magic", "world_name": "Coral Reef", "mascot": "🐙", "background_file": "ocean_magic.png",
+        "label": "🐠 Ocean Magic", "selector_label": "🐠🐙  Ocean Magic", "world_name": "Coral Reef", "mascot": "🐙", "background_file": "ocean_magic.png",
         "story_instruction": "Make it a magical underwater adventure with friendly fish, shiny shells and sparkly coral.",
         "floating_emojis": ["🫧", "🐠", "🐚", "🐬", "🪸", "⭐"], "accent_colour": "#159bb5",
     },
@@ -137,6 +143,29 @@ VOICE_PERSONAS = {
         "label": "🦜 Polly the Parrot", "avatar": "🦜", "about": "A chirpy cartoon parrot",
         "engine": "google", "accent_domain": "us", "semitone_shift": 6.0, "tempo_factor": 1.08, "robot_effect": False,
     },
+    "robo_beep": {
+        "label": "🤖 Robo Beep", "avatar": "🤖", "about": "A friendly cartoon robot",
+        "engine": "google", "accent_domain": "us", "semitone_shift": 1.0, "tempo_factor": 1.0, "robot_effect": True,
+    },
+    "giggle_grace": {
+        "label": "👧 Giggle Grace (Kid-Style Girl)", "avatar": "👧", "about": "A lively peer-age girl-style voice",
+        "engine": "piper", "accent_domain": "", "piper_model_file": "en/en_US/amy/medium/en_US-amy-medium.onnx",
+        "semitone_shift": 3.0, "tempo_factor": 1.05, "robot_effect": False,
+    },
+    "captain_finn": {
+        "label": "🧭 Captain Finn (American Male)", "avatar": "🧭", "about": "A bold, friendly adventure narrator",
+        "engine": "piper", "accent_domain": "", "piper_model_file": "en/en_US/ryan/medium/en_US-ryan-medium.onnx",
+        "semitone_shift": 0.0, "tempo_factor": 1.0, "robot_effect": False,
+    },
+    "chloe_australian": {
+        "label": "👩 Aunty Chloe (Australian)", "avatar": "👩", "about": "A sunny Australian lady",
+        "engine": "google", "accent_domain": "com.au", "semitone_shift": 0.0, "tempo_factor": 1.0, "robot_effect": False,
+    },
+    "sir_alan": {
+        "label": "🎩 Sir Alan (British Male)", "avatar": "🎩", "about": "A gentle British bedtime narrator",
+        "engine": "piper", "accent_domain": "", "piper_model_file": "en/en_GB/alan/medium/en_GB-alan-medium.onnx",
+        "semitone_shift": 0.0, "tempo_factor": 0.96, "robot_effect": False,
+    },
     "whiskers_kitten": {
         "label": "🐱 Whiskers the Kitten", "avatar": "🐱", "about": "A tiny, playful cartoon kitten",
         "engine": "google", "accent_domain": "com.au", "semitone_shift": 4.5, "tempo_factor": 1.05, "robot_effect": False,
@@ -145,47 +174,9 @@ VOICE_PERSONAS = {
         "label": "👩 Aunt Amy (American)", "avatar": "👩", "about": "A friendly American lady",
         "engine": "google", "accent_domain": "us", "semitone_shift": 0.0, "tempo_factor": 1.0, "robot_effect": False,
     },
-    "chloe_australian": {
-        "label": "👩 Aunty Chloe (Australian)", "avatar": "👩", "about": "A sunny Australian lady",
-        "engine": "google", "accent_domain": "com.au", "semitone_shift": 0.0, "tempo_factor": 1.0, "robot_effect": False,
-    },
     "priya_indian": {
-        "label": "👩 Teacher Priya (Indian English)", "avatar": "👩‍🏫", "about": "A kind teacher with an Indian English accent",
+        "label": "👩‍🏫 Teacher Priya (Indian English)", "avatar": "👩‍🏫", "about": "A kind teacher with an Indian English accent",
         "engine": "google", "accent_domain": "co.in", "semitone_shift": 0.0, "tempo_factor": 1.0, "robot_effect": False,
-    },
-    "captain_finn": {
-        "label": "🧭 Captain Finn (American Male)", "avatar": "🧭", "about": "A bold, friendly adventure narrator",
-        "engine": "piper", "accent_domain": "", "piper_model_file": "en/en_US/ryan/medium/en_US-ryan-medium.onnx",
-        "semitone_shift": 0.0, "tempo_factor": 1.0, "robot_effect": False,
-    },
-    "joe_storyteller": {
-        "label": "🎙️ Jolly Joe (American Male)", "avatar": "🎙️", "about": "A warm, natural storybook voice",
-        "engine": "piper", "accent_domain": "", "piper_model_file": "en/en_US/joe/medium/en_US-joe-medium.onnx",
-        "semitone_shift": 0.0, "tempo_factor": 0.98, "robot_effect": False,
-    },
-    "hero_bryce": {
-        "label": "🦸 Hero Bryce (American Male)", "avatar": "🦸", "about": "A bright, energetic hero voice",
-        "engine": "piper", "accent_domain": "", "piper_model_file": "en/en_US/bryce/medium/en_US-bryce-medium.onnx",
-        "semitone_shift": 0.0, "tempo_factor": 1.03, "robot_effect": False,
-    },
-    "sir_alan": {
-        "label": "🎩 Sir Alan (British Male)", "avatar": "🎩", "about": "A gentle British bedtime narrator",
-        "engine": "piper", "accent_domain": "", "piper_model_file": "en/en_GB/alan/medium/en_GB-alan-medium.onnx",
-        "semitone_shift": 0.0, "tempo_factor": 0.96, "robot_effect": False,
-    },
-    "buddy_ben": {
-        "label": "🧒 Buddy Ben (Kid-Style Boy)", "avatar": "🧒", "about": "A cheerful peer-age boy-style voice",
-        "engine": "piper", "accent_domain": "", "piper_model_file": "en/en_US/bryce/medium/en_US-bryce-medium.onnx",
-        "semitone_shift": 3.0, "tempo_factor": 1.05, "robot_effect": False,
-    },
-    "giggle_grace": {
-        "label": "👧 Giggle Grace (Kid-Style Girl)", "avatar": "👧", "about": "A lively peer-age girl-style voice",
-        "engine": "piper", "accent_domain": "", "piper_model_file": "en/en_US/amy/medium/en_US-amy-medium.onnx",
-        "semitone_shift": 3.0, "tempo_factor": 1.05, "robot_effect": False,
-    },
-    "robo_beep": {
-        "label": "🤖 Robo Beep", "avatar": "🤖", "about": "A friendly cartoon robot",
-        "engine": "google", "accent_domain": "us", "semitone_shift": 1.0, "tempo_factor": 1.0, "robot_effect": True,
     },
 }
 DEFAULT_VOICE_KEY = "lily_british"
@@ -241,7 +232,7 @@ def find_background_file(background_file_name):
     return None
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=6)
 def read_background_as_base64(background_file_name):
     """
     Read a theme background picture and return it as a CSS data URL.
@@ -311,6 +302,7 @@ def apply_page_style(theme_settings):
         100% {{ transform: translateY(-125vh) rotate(340deg); }} }}
     @keyframes bounceSoft {{ 0%, 100% {{ transform: translateY(0); }} 50% {{ transform: translateY(-8px); }} }}
     @keyframes wiggle {{ 0%, 100% {{ transform: rotate(-6deg); }} 50% {{ transform: rotate(6deg); }} }}
+    @keyframes selectedPop {{ 0%, 100% {{ transform: scale(1); }} 50% {{ transform: scale(1.035); }} }}
     .taletwinkle-title {{ text-align: center; font-size: clamp(3.4rem, 7vw, 6.2rem); line-height: 0.98;
         font-weight: 700; letter-spacing: -0.04em; color: #30234d; text-shadow: 0 0 18px white, 0 5px 0 white,
         0 12px 28px {accent_colour}55; margin: 0 0 0.15rem; animation: bounceSoft 3s ease-in-out infinite; }}
@@ -330,10 +322,12 @@ def apply_page_style(theme_settings):
     [data-testid="stVerticalBlockBorderWrapper"]:has(.premium-panel-marker)::before {{ content: ""; position: absolute;
         top: 0; left: 10%; right: 10%; height: 4px; border-radius: 0 0 8px 8px; background: {accent_colour}; }}
     .premium-panel-marker {{ height: 0; overflow: hidden; }}
-    [data-testid="stVerticalBlockBorderWrapper"]:has(.live-story-marker) {{ background: rgba(255,255,255,0.97) !important;
+    .st-key-live_story_box, [data-testid="stVerticalBlockBorderWrapper"]:has(.live-story-marker) {{ background: #ffffff !important;
         border: 2px solid {accent_colour}70 !important; border-radius: 26px !important;
         box-shadow: 0 12px 30px rgba(48,35,77,0.16) !important; padding: 1rem 1.3rem !important;
         min-height: 9rem; font-family: 'Fredoka', sans-serif; font-size: 1.28rem; line-height: 1.72; color: #2f2841; }}
+    .st-key-live_story_box [data-testid="stMarkdownContainer"],
+    .st-key-live_story_box [data-testid="stMarkdownContainer"] p {{ background: #ffffff !important; color: #2f2841 !important; }}
     .live-story-marker {{ height: 0; overflow: hidden; }}
     .caption-card {{ background: rgba(255,255,255,0.96); border: 2px solid {accent_colour}55; border-radius: 18px;
         padding: 0.62rem 0.95rem; margin: 0.45rem 0 0.75rem; color: #342b4d; font-size: 1.05rem;
@@ -353,15 +347,30 @@ def apply_page_style(theme_settings):
     [data-testid="stFileUploader"] label p {{ font-size: 1.35rem !important; font-weight: 600; color: #30234d;
         background: rgba(255,255,255,0.88); border-radius: 12px; padding: 0.1rem 0.6rem; }}
     [data-testid="stImage"] img {{ border-radius: 22px; box-shadow: 0 8px 24px rgba(48,35,77,0.18); }}
-    div[role="radiogroup"] label {{ background: rgba(255,255,255,0.88); border-radius: 15px; padding: 0.32rem 0.62rem;
-        margin: 0.13rem 0; width: 100%; border: 2px solid transparent; box-shadow: 0 2px 6px rgba(0,0,0,0.06); }}
+    div[role="radiogroup"] label {{ background: rgba(255,255,255,0.92); border-radius: 18px; padding: 0.55rem 0.72rem;
+        margin: 0.18rem 0; width: 100%; min-height: 3.05rem; border: 2px solid transparent;
+        box-shadow: 0 3px 8px rgba(0,0,0,0.07); cursor: pointer; transition: transform .18s ease, box-shadow .18s ease; }}
+    div[role="radiogroup"] label:hover {{ transform: translateX(5px) scale(1.02);
+        box-shadow: 0 7px 16px {accent_colour}35; border-color: {accent_colour}75; }}
     div[role="radiogroup"] label:has(input:checked) {{ border: 2px solid {accent_colour};
-        background: linear-gradient(90deg, white, {accent_colour}25); transform: translateX(3px); }}
-    div[role="radiogroup"] label p {{ font-size: 1.02rem !important; }}
+        background: linear-gradient(90deg, white, {accent_colour}32); transform: translateX(5px);
+        animation: selectedPop 2.4s ease-in-out infinite; }}
+    div[role="radiogroup"] label p {{ font-size: 1.08rem !important; font-weight: 650 !important; }}
     [data-baseweb="select"] > div {{ border: 3px solid {accent_colour} !important; border-radius: 18px !important;
         font-size: 1.05rem; background: white; }}
-    [data-testid="stSlider"] {{ background: rgba(255,255,255,0.82); border-radius: 16px; padding: 0.28rem 0.75rem 0.1rem; }}
-    [role="slider"] {{ background-color: {accent_colour} !important; }}
+    [data-testid="stSlider"] {{ background: linear-gradient(135deg, rgba(255,255,255,0.98), {accent_colour}20);
+        border: 2px solid {accent_colour}55; border-radius: 19px; padding: 0.58rem 0.82rem 0.28rem;
+        box-shadow: inset 0 1px 0 white, 0 5px 12px rgba(48,35,77,0.09); }}
+    [data-testid="stSlider"] [data-baseweb="slider"] {{ min-height: 2.4rem; }}
+    [role="slider"] {{ background-color: {accent_colour} !important; width: 1.35rem !important; height: 1.35rem !important;
+        box-shadow: 0 0 0 5px white, 0 4px 11px {accent_colour}75 !important; cursor: grab !important; }}
+    [role="slider"]:active {{ cursor: grabbing !important; transform: scale(1.12); }}
+    .control-impact {{ margin: 0.28rem 0 0.55rem; padding: 0.38rem 0.65rem; text-align: center;
+        border-radius: 999px; background: {accent_colour}18; color: #3c3155; font-weight: 600; font-size: 0.92rem; }}
+    .character-card {{ background: linear-gradient(135deg, #ffffff, {accent_colour}25); border: 2px solid {accent_colour}65;
+        border-radius: 20px; padding: 0.55rem 0.7rem; text-align: center; margin-top: 0.35rem;
+        box-shadow: 0 7px 17px rgba(48,35,77,0.12); cursor: pointer; }}
+    .character-card .mascot {{ font-size: 3.35rem; }}
     audio {{ width: 100%; }}
     .stButton > button {{ border-radius: 999px; border: 3px solid {accent_colour}; font-family: 'Fredoka', sans-serif;
         font-size: 1.1rem; background: white; }}
@@ -369,6 +378,8 @@ def apply_page_style(theme_settings):
     @media (max-width: 900px) {{ .taletwinkle-title {{ font-size: clamp(3rem, 13vw, 4.5rem); }}
         [data-testid="stVerticalBlockBorderWrapper"]:has(.premium-panel-marker) {{ margin-bottom: 0.45rem; }}
         .story-card {{ font-size: 1.12rem; padding: 1rem; }} }}
+    @media (prefers-reduced-motion: reduce) {{ .floating-emoji, .taletwinkle-title, .mascot,
+        div[role="radiogroup"] label:has(input:checked) {{ animation: none !important; transition: none !important; }} }}
     </style>
     {build_floating_emoji_html(floating_emojis=theme_settings["floating_emojis"])}
     """
@@ -401,6 +412,24 @@ def get_hugging_face_token():
     return os.environ.get("HF_TOKEN")
 
 
+def get_story_chat_template_settings(model_name):
+    """
+    Return model-specific chat-template controls for the Transformers pipeline.
+
+    The text-generation pipeline automatically applies ``add_generation_prompt=True`` when the
+    final chat message belongs to the user. Qwen3 additionally needs ``enable_thinking=False`` so
+    it writes the short story immediately instead of spending time and tokens on a reasoning block.
+
+    Parameters:
+        model_name (str): Hugging Face story model id.
+    Returns:
+        dict: keyword arguments passed directly to ``pipeline(messages, ...)``.
+    """
+    if model_name.startswith("Qwen/Qwen3-"):
+        return {"tokenizer_encode_kwargs": {"enable_thinking": False}}
+    return {}
+
+
 def shrink_model_to_int8(loaded_pipeline):
     """
     Convert the model's Linear layers to int8 (PyTorch dynamic quantization): about 3x less memory
@@ -420,6 +449,17 @@ def shrink_model_to_int8(loaded_pipeline):
         return "float32"
 
 
+def clear_cached_model(cached_loader, *loader_arguments):
+    """Release one cached model entry when supported, then ask Python to reclaim unused memory."""
+    clear_function = getattr(cached_loader, "clear", None)
+    if clear_function is not None:
+        try:
+            clear_function(*loader_arguments)
+        except TypeError:
+            clear_function()
+    gc.collect()
+
+
 @st.cache_resource(show_spinner=False)
 def load_caption_pipeline(model_name):
     """
@@ -431,22 +471,40 @@ def load_caption_pipeline(model_name):
         dict: {"pipeline": Pipeline, "precision": str}.
     """
     warm_up_picture = Image.new("RGB", (64, 64), "white")
+    caption_pipeline = None
+    LOGGER.info("Loading caption model: %s", model_name)
     try:
         caption_pipeline = pipeline("image-to-text", model=model_name, device=-1, token=get_hugging_face_token())
         model_precision = shrink_model_to_int8(loaded_pipeline=caption_pipeline)
         caption_pipeline(warm_up_picture, generate_kwargs={"max_new_tokens": 5})
-    except Exception:
+    except Exception as quantized_load_error:
+        LOGGER.warning("Caption model int8 load failed; retrying in float32: %s", quantized_load_error)
+        if caption_pipeline is not None:
+            del caption_pipeline
+        gc.collect()
         # If the shrunk model cannot run on this machine, use the normal full-precision model.
-        caption_pipeline = pipeline("image-to-text", model=model_name, device=-1, token=get_hugging_face_token())
-        model_precision = "float32"
-        caption_pipeline(warm_up_picture, generate_kwargs={"max_new_tokens": 5})
+        try:
+            caption_pipeline = pipeline("image-to-text", model=model_name, device=-1, token=get_hugging_face_token())
+            model_precision = "float32"
+            caption_pipeline(warm_up_picture, generate_kwargs={"max_new_tokens": 5})
+        except Exception:
+            LOGGER.exception("Caption model failed to load: %s", model_name)
+            if caption_pipeline is not None:
+                del caption_pipeline
+            gc.collect()
+            raise
+    LOGGER.info("Caption model ready: %s (%s)", model_name, model_precision)
     return {"pipeline": caption_pipeline, "precision": model_precision}
 
 
 @st.cache_resource(show_spinner=False)
 def load_story_pipeline(model_name):
     """
-    Load the text-generation (story) pipeline once, shrink it and warm it up.
+    Load the text-generation (story) pipeline once and warm it up.
+
+    Qwen3 uses bfloat16 directly. The focused benchmark found that converting Qwen3 from float32
+    to legacy dynamic int8 increased peak memory sharply, while its native bfloat16 checkpoint was
+    safer for Streamlit Cloud. Other candidates retain the int8-first fallback path for comparison.
 
     Parameters:
         model_name (str): Hugging Face model id.
@@ -454,20 +512,49 @@ def load_story_pipeline(model_name):
         dict: {"pipeline": Pipeline, "precision": str}.
     """
     warm_up_messages = [{"role": "user", "content": "Say hi."}]
+    qwen3_chat_settings = get_story_chat_template_settings(model_name=model_name)
+    story_pipeline = None
+    LOGGER.info("Loading story model: %s", model_name)
+    if model_name.startswith("Qwen/Qwen3-"):
+        try:
+            story_pipeline = pipeline("text-generation", model=model_name, device=-1, torch_dtype=torch.bfloat16,
+                                      token=get_hugging_face_token())
+            model_precision = "bfloat16"
+            story_pipeline(warm_up_messages, max_new_tokens=3, do_sample=False, **qwen3_chat_settings)
+            LOGGER.info("Story model ready: %s (%s, thinking disabled)", model_name, model_precision)
+            return {"pipeline": story_pipeline, "precision": model_precision}
+        except Exception:
+            LOGGER.exception("Qwen3 story model failed to load: %s", model_name)
+            if story_pipeline is not None:
+                del story_pipeline
+            gc.collect()
+            raise
     try:
         story_pipeline = pipeline("text-generation", model=model_name, device=-1, token=get_hugging_face_token())
         model_precision = shrink_model_to_int8(loaded_pipeline=story_pipeline)
-        story_pipeline(warm_up_messages, max_new_tokens=3, do_sample=False)
-    except Exception:
+        story_pipeline(warm_up_messages, max_new_tokens=3, do_sample=False, **qwen3_chat_settings)
+    except Exception as quantized_load_error:
+        LOGGER.warning("Story model int8 load failed; retrying in bfloat16: %s", quantized_load_error)
+        if story_pipeline is not None:
+            del story_pipeline
+        gc.collect()
         # Fallback: half-size bfloat16 weights still fit Streamlit Cloud's memory.
-        story_pipeline = pipeline("text-generation", model=model_name, device=-1, torch_dtype=torch.bfloat16,
-                                  token=get_hugging_face_token())
-        model_precision = "bfloat16"
-        story_pipeline(warm_up_messages, max_new_tokens=3, do_sample=False)
+        try:
+            story_pipeline = pipeline("text-generation", model=model_name, device=-1, torch_dtype=torch.bfloat16,
+                                      token=get_hugging_face_token())
+            model_precision = "bfloat16"
+            story_pipeline(warm_up_messages, max_new_tokens=3, do_sample=False, **qwen3_chat_settings)
+        except Exception:
+            LOGGER.exception("Story model failed to load: %s", model_name)
+            if story_pipeline is not None:
+                del story_pipeline
+            gc.collect()
+            raise
+    LOGGER.info("Story model ready: %s (%s)", model_name, model_precision)
     return {"pipeline": story_pipeline, "precision": model_precision}
 
 
-@st.cache_resource(show_spinner=False)
+@st.cache_resource(show_spinner=False, max_entries=2)
 def load_piper_voice(model_file):
     """Download and cache one fast Piper voice checkpoint from Hugging Face.
 
@@ -479,9 +566,20 @@ def load_piper_voice(model_file):
     from huggingface_hub import hf_hub_download
     from piper import PiperVoice
 
-    model_path = hf_hub_download(repo_id=LOCAL_SPEECH_MODEL_NAME, filename=model_file)
-    configuration_path = hf_hub_download(repo_id=LOCAL_SPEECH_MODEL_NAME, filename=f"{model_file}.json")
-    return PiperVoice.load(model_path=model_path, config_path=configuration_path, use_cuda=False)
+    LOGGER.info("Loading Piper voice: %s", model_file)
+    selected_voice = None
+    try:
+        model_path = hf_hub_download(repo_id=LOCAL_SPEECH_MODEL_NAME, filename=model_file)
+        configuration_path = hf_hub_download(repo_id=LOCAL_SPEECH_MODEL_NAME, filename=f"{model_file}.json")
+        selected_voice = PiperVoice.load(model_path=model_path, config_path=configuration_path, use_cuda=False)
+        LOGGER.info("Piper voice ready: %s", model_file)
+        return selected_voice
+    except Exception:
+        LOGGER.exception("Piper voice failed to load: %s", model_file)
+        if selected_voice is not None:
+            del selected_voice
+        gc.collect()
+        raise
 
 
 @st.cache_resource(show_spinner=False)
@@ -494,8 +592,10 @@ def check_google_voice_available():
     """
     try:
         speak_sentence_with_google(sentence_text="Hello.", accent_domain="co.uk")
+        LOGGER.info("Google TTS availability check succeeded")
         return True
-    except Exception:
+    except Exception as availability_error:
+        LOGGER.warning("Google TTS unavailable; Piper fallback will be used: %s", availability_error)
         return False
 
 
@@ -510,24 +610,30 @@ def get_speech_lock():
     return threading.Lock()
 
 
-def load_all_models():
-    """
-    Load and warm independent resources concurrently after the interface is visible.
-
-    Returns:
-        dict: caption/story models, a warmed local Piper fallback, and Google voice availability.
-    """
-    with ThreadPoolExecutor(max_workers=4) as model_workers:
-        caption_job = model_workers.submit(load_caption_pipeline, model_name=IMAGE_CAPTION_MODEL_NAME)
+def load_story_and_voice_models(persona_settings):
+    """Load Stage 2 and only the required Stage 3 model after captioning has finished."""
+    google_voice_available = check_google_voice_available()
+    voice_engine = choose_voice_engine(persona_settings=persona_settings,
+                                       google_voice_available=google_voice_available)
+    selected_piper_file = (select_local_model_file(persona_settings=persona_settings)
+                           if voice_engine == "piper" else None)
+    LOGGER.info("Loading Stage 2 and Stage 3 resources; voice engine=%s", voice_engine)
+    with ThreadPoolExecutor(max_workers=2) as model_workers:
         story_job = model_workers.submit(load_story_pipeline, model_name=STORY_GENERATION_MODEL_NAME)
-        local_speech_job = model_workers.submit(load_piper_voice, model_file=DEFAULT_PIPER_MODEL_FILE)
-        google_check_job = model_workers.submit(check_google_voice_available)
+        piper_job = (model_workers.submit(load_piper_voice, model_file=selected_piper_file)
+                     if selected_piper_file else None)
         return {
-            "caption": caption_job.result(),
             "story": story_job.result(),
-            "local_speech": local_speech_job.result(),
-            "google_voice_available": google_check_job.result(),
+            "local_speech": piper_job.result() if piper_job else None,
+            "google_voice_available": google_voice_available,
         }
+
+
+def release_stage_two_and_three_models():
+    """Clear story and Piper resources after a run so repeated use cannot accumulate model RAM."""
+    clear_cached_model(load_story_pipeline, STORY_GENERATION_MODEL_NAME)
+    clear_cached_model(load_piper_voice)
+    LOGGER.info("Released Stage 2 and Stage 3 model caches")
 
 
 # ---------- 3. Picture functions ----------
@@ -726,6 +832,7 @@ def stream_story_text(story_pipeline, story_messages, target_word_count, stream_
                            "max_new_tokens": int(upper_word_limit * 1.45) + 8, "do_sample": True,
                            "temperature": 0.8, "top_p": 0.9, "repetition_penalty": 1.1,
                            "pad_token_id": story_pipeline.tokenizer.eos_token_id}
+    generation_settings.update(get_story_chat_template_settings(model_name=STORY_GENERATION_MODEL_NAME))
     if use_early_stop:
         generation_settings["stopping_criteria"] = StoppingCriteriaList([stop_when_story_is_long_enough])
 
@@ -874,7 +981,7 @@ def write_story_live(story_pipeline, image_caption, theme_key, target_word_count
     for use_early_stop in (True, False):
         stream_progress.update({"text": "", "queued_sentences": 0, "problems": []})
         try:
-            with story_slot.container(border=True):
+            with story_slot.container(border=True, key="live_story_box"):
                 st.markdown('<div class="live-story-marker"></div>', unsafe_allow_html=True)
                 st.markdown('<span class="word-chip">✍️ Writing your story...</span>', unsafe_allow_html=True)
                 st.write_stream(stream_story_text(story_pipeline=story_pipeline, story_messages=story_messages,
@@ -1179,14 +1286,15 @@ def collect_sentence_clips(story_sentences, speech_jobs, queue_sentence_for_spee
         queue_sentence_for_speech(story_sentence)
     try:
         return [speech_jobs[story_sentence].result(timeout=60) for story_sentence in story_sentences], False
-    except Exception:
+    except Exception as online_voice_error:
+        LOGGER.warning("Online narration failed; re-speaking with Piper: %s", online_voice_error)
         del local_speech_resources
         fallback_model_file = select_local_model_file(persona_settings=persona_settings)
         return [speak_sentence_with_piper(sentence_text=story_sentence, model_file=fallback_model_file)
                 for story_sentence in story_sentences], True
 
 
-def create_narration_for_story(story_text, persona_settings, voice_speed, loaded_models):
+def create_narration_for_story(story_text, persona_settings, voice_speed):
     """
     Speak a finished story from scratch (used when the child changes the voice or speed later).
     All sentences are spoken in parallel.
@@ -1195,26 +1303,43 @@ def create_narration_for_story(story_text, persona_settings, voice_speed, loaded
         story_text (str): the story.
         persona_settings (dict): chosen storyteller voice.
         voice_speed (float): chosen speed.
-        loaded_models (dict): result of load_all_models().
     Returns:
         dict: wav_bytes, audio_seconds, voice_seconds, voice_engine.
     """
     start_time = time.perf_counter()
+    local_speech_resources = None
+    speech_workers = None
+    google_voice_available = check_google_voice_available()
     voice_engine = choose_voice_engine(persona_settings=persona_settings,
-                                       google_voice_available=loaded_models["google_voice_available"])
-    speech_workers, speech_jobs, queue_sentence_for_speech = start_speech_queue(
-        voice_engine=voice_engine, persona_settings=persona_settings,
-        local_speech_resources=loaded_models["local_speech"])
-    sentence_clips, used_fallback_voice = collect_sentence_clips(
-        story_sentences=split_text_into_sentences(story_text=story_text), speech_jobs=speech_jobs,
-        queue_sentence_for_speech=queue_sentence_for_speech,
-        local_speech_resources=loaded_models["local_speech"], persona_settings=persona_settings)
-    speech_workers.shutdown(wait=False)
-    wav_bytes, audio_seconds = assemble_narration(sentence_clips=sentence_clips, persona_settings=persona_settings,
-                                                  voice_speed=voice_speed)
-    return {"wav_bytes": wav_bytes, "audio_seconds": audio_seconds, "voice_seconds": time.perf_counter() - start_time,
-            "voice_engine": describe_voice_engine(voice_engine=voice_engine, persona_settings=persona_settings,
-                                                  used_fallback_voice=used_fallback_voice)}
+                                       google_voice_available=google_voice_available)
+    try:
+        if voice_engine == "piper":
+            local_speech_resources = load_piper_voice(
+                model_file=select_local_model_file(persona_settings=persona_settings))
+        speech_workers, speech_jobs, queue_sentence_for_speech = start_speech_queue(
+            voice_engine=voice_engine, persona_settings=persona_settings,
+            local_speech_resources=local_speech_resources)
+        sentence_clips, used_fallback_voice = collect_sentence_clips(
+            story_sentences=split_text_into_sentences(story_text=story_text), speech_jobs=speech_jobs,
+            queue_sentence_for_speech=queue_sentence_for_speech,
+            local_speech_resources=local_speech_resources, persona_settings=persona_settings)
+        speech_workers.shutdown(wait=False)
+        speech_workers = None
+        wav_bytes, audio_seconds = assemble_narration(sentence_clips=sentence_clips,
+                                                      persona_settings=persona_settings, voice_speed=voice_speed)
+        return {"wav_bytes": wav_bytes, "audio_seconds": audio_seconds,
+                "voice_seconds": time.perf_counter() - start_time,
+                "voice_engine": describe_voice_engine(voice_engine=voice_engine, persona_settings=persona_settings,
+                                                       used_fallback_voice=used_fallback_voice)}
+    except Exception:
+        LOGGER.exception("Narration generation failed")
+        raise
+    finally:
+        if speech_workers is not None:
+            speech_workers.shutdown(wait=False, cancel_futures=True)
+        if local_speech_resources is not None:
+            del local_speech_resources
+        clear_cached_model(load_piper_voice)
 
 
 def describe_voice_engine(voice_engine, persona_settings, used_fallback_voice):
@@ -1236,7 +1361,7 @@ def describe_voice_engine(voice_engine, persona_settings, used_fallback_voice):
     return f"{LOCAL_SPEECH_MODEL_NAME} ({persona_settings['piper_model_file']}; local Hugging Face ONNX model)"
 
 
-@st.cache_data(show_spinner=False, max_entries=40)
+@st.cache_data(show_spinner=False, max_entries=12)
 def create_greeting_audio(voice_key, voice_speed):
     """
     Make a short hello from the chosen storyteller, so the audio player is always on screen and
@@ -1251,22 +1376,42 @@ def create_greeting_audio(voice_key, voice_speed):
     persona_settings = VOICE_PERSONAS[voice_key]
     storyteller_name = re.sub(r"\s*\(.*\)", "", persona_settings["label"]).split(" ", 1)[-1]
     greeting_text = f"Hello! I am {storyteller_name}. Drop a picture, and I will tell you a story!"
+    used_piper = False
     try:
-        loaded_models = load_all_models()
-        return create_narration_for_story(story_text=greeting_text, persona_settings=persona_settings,
-                                          voice_speed=voice_speed, loaded_models=loaded_models)["wav_bytes"]
+        if persona_settings["engine"] == "google":
+            try:
+                greeting_clip = speak_sentence_with_google(sentence_text=greeting_text,
+                                                           accent_domain=persona_settings["accent_domain"])
+            except Exception:
+                LOGGER.warning("Google greeting failed for %s; using Piper fallback", voice_key)
+                used_piper = True
+                greeting_clip = speak_sentence_with_piper(
+                    sentence_text=greeting_text,
+                    model_file=select_local_model_file(persona_settings=persona_settings))
+        else:
+            used_piper = True
+            greeting_clip = speak_sentence_with_piper(
+                sentence_text=greeting_text,
+                model_file=select_local_model_file(persona_settings=persona_settings))
+        greeting_wav_bytes, _ = assemble_narration(sentence_clips=[greeting_clip],
+                                                    persona_settings=persona_settings,
+                                                    voice_speed=voice_speed)
+        return greeting_wav_bytes
     except Exception:
+        LOGGER.exception("Greeting audio failed for voice: %s", voice_key)
         return b""
+    finally:
+        if used_piper:
+            clear_cached_model(load_piper_voice)
 
 
 # ---------- 7. Complete picture -> story -> voice run ----------
-def create_story_and_voice(loaded_models, picture, theme_key, target_word_count, persona_settings,
+def create_story_and_voice(picture, theme_key, target_word_count, persona_settings,
                            voice_speed, story_slot, caption_slot):
     """
     Run all three stages for a new picture: caption, live story writing with background speech, narration.
 
     Parameters:
-        loaded_models (dict): result of load_all_models().
         picture (PIL.Image.Image): the uploaded picture.
         theme_key (str): chosen theme.
         target_word_count (int): chosen length.
@@ -1278,41 +1423,77 @@ def create_story_and_voice(loaded_models, picture, theme_key, target_word_count,
         tuple(dict, dict): story_result and narration_result.
     """
     start_time = time.perf_counter()
+    LOGGER.info("Starting picture-to-story run: theme=%s target_words=%d", theme_key, target_word_count)
     show_placeholder(display_slot=story_slot, placeholder_text="🔎 Looking closely at your picture...")
-    picture_caption, caption_seconds = describe_picture(
-        caption_pipeline=loaded_models["caption"]["pipeline"],
-        picture=prepare_image_for_model(picture=picture, maximum_side_pixels=MODEL_INPUT_IMAGE_SIZE))
+    caption_resources = None
+    caption_precision = "unknown"
+    try:
+        caption_resources = load_caption_pipeline(model_name=IMAGE_CAPTION_MODEL_NAME)
+        caption_precision = caption_resources["precision"]
+        picture_caption, caption_seconds = describe_picture(
+            caption_pipeline=caption_resources["pipeline"],
+            picture=prepare_image_for_model(picture=picture, maximum_side_pixels=MODEL_INPUT_IMAGE_SIZE))
+    except Exception:
+        LOGGER.exception("Stage 1 caption generation failed")
+        raise
+    finally:
+        if caption_resources is not None:
+            del caption_resources
+        clear_cached_model(load_caption_pipeline, IMAGE_CAPTION_MODEL_NAME)
+        LOGGER.info("Released Stage 1 model after caption generation")
     show_caption_card(caption_slot=caption_slot, picture_caption=picture_caption)
+    LOGGER.info("Stage 1 caption completed in %.2f seconds", caption_seconds)
 
-    voice_engine = choose_voice_engine(persona_settings=persona_settings,
-                                       google_voice_available=loaded_models["google_voice_available"])
-    speech_workers, speech_jobs, queue_sentence_for_speech = start_speech_queue(
-        voice_engine=voice_engine, persona_settings=persona_settings,
-        local_speech_resources=loaded_models["local_speech"])
-    story_generation = write_story_live(story_pipeline=loaded_models["story"]["pipeline"], image_caption=picture_caption,
-                                        theme_key=theme_key, target_word_count=target_word_count, story_slot=story_slot,
-                                        queue_sentence_for_speech=queue_sentence_for_speech)
-    story_ready_time = time.perf_counter()
-    show_story_card(story_slot=story_slot, story_text=story_generation["story"], word_count=story_generation["word_count"])
+    generation_resources = None
+    speech_workers = None
+    try:
+        generation_resources = load_story_and_voice_models(persona_settings=persona_settings)
+        voice_engine = choose_voice_engine(persona_settings=persona_settings,
+                                           google_voice_available=generation_resources["google_voice_available"])
+        speech_workers, speech_jobs, queue_sentence_for_speech = start_speech_queue(
+            voice_engine=voice_engine, persona_settings=persona_settings,
+            local_speech_resources=generation_resources["local_speech"])
+        story_generation = write_story_live(
+            story_pipeline=generation_resources["story"]["pipeline"], image_caption=picture_caption,
+            theme_key=theme_key, target_word_count=target_word_count, story_slot=story_slot,
+            queue_sentence_for_speech=queue_sentence_for_speech)
+        story_ready_time = time.perf_counter()
+        LOGGER.info("Stage 2 story completed in %.2f seconds", story_ready_time - start_time)
+        show_story_card(story_slot=story_slot, story_text=story_generation["story"],
+                        word_count=story_generation["word_count"])
 
-    sentence_clips, used_fallback_voice = collect_sentence_clips(
-        story_sentences=split_text_into_sentences(story_text=story_generation["story"]), speech_jobs=speech_jobs,
-        queue_sentence_for_speech=queue_sentence_for_speech,
-        local_speech_resources=loaded_models["local_speech"], persona_settings=persona_settings)
-    speech_workers.shutdown(wait=False)
-    wav_bytes, audio_seconds = assemble_narration(sentence_clips=sentence_clips, persona_settings=persona_settings,
-                                                  voice_speed=voice_speed)
-    voice_ready_time = time.perf_counter()
+        sentence_clips, used_fallback_voice = collect_sentence_clips(
+            story_sentences=split_text_into_sentences(story_text=story_generation["story"]), speech_jobs=speech_jobs,
+            queue_sentence_for_speech=queue_sentence_for_speech,
+            local_speech_resources=generation_resources["local_speech"], persona_settings=persona_settings)
+        speech_workers.shutdown(wait=False)
+        speech_workers = None
+        wav_bytes, audio_seconds = assemble_narration(sentence_clips=sentence_clips,
+                                                      persona_settings=persona_settings, voice_speed=voice_speed)
+        voice_ready_time = time.perf_counter()
+        LOGGER.info("Stage 3 narration completed in %.2f seconds", voice_ready_time - story_ready_time)
+        story_precision = generation_resources["story"]["precision"]
+    except Exception:
+        LOGGER.exception("Stage 2 or Stage 3 generation failed")
+        raise
+    finally:
+        if speech_workers is not None:
+            speech_workers.shutdown(wait=False, cancel_futures=True)
+        if generation_resources is not None:
+            del generation_resources
+        release_stage_two_and_three_models()
 
     first_words_time = story_generation["first_words_time"] or story_ready_time
     story_result = {"caption": picture_caption, "story": story_generation["story"],
                     "word_count": story_generation["word_count"], "used_backup_story": story_generation["used_backup_story"],
                     "caption_seconds": caption_seconds, "first_words_seconds": first_words_time - start_time,
-                    "story_seconds": story_ready_time - start_time}
+                    "story_seconds": story_ready_time - start_time, "caption_precision": caption_precision,
+                    "story_precision": story_precision}
     narration_result = {"wav_bytes": wav_bytes, "audio_seconds": audio_seconds,
                         "voice_seconds": voice_ready_time - story_ready_time, "total_seconds": voice_ready_time - start_time,
                         "voice_engine": describe_voice_engine(voice_engine=voice_engine, persona_settings=persona_settings,
                                                               used_fallback_voice=used_fallback_voice)}
+    LOGGER.info("Completed picture-to-story run in %.2f seconds", narration_result["total_seconds"])
     return story_result, narration_result
 
 
@@ -1328,11 +1509,11 @@ def render_theme_picker():
         st.markdown('<div class="premium-panel-marker"></div>', unsafe_allow_html=True)
         st.markdown('<div class="panel-card"><p class="panel-title">🎨 Pick a story world</p></div>', unsafe_allow_html=True)
         selected_theme_key = st.radio("Story world", options=list(STORY_THEMES.keys()),
-                                      format_func=lambda theme_key: STORY_THEMES[theme_key]["label"],
+                                      format_func=lambda theme_key: STORY_THEMES[theme_key]["selector_label"],
                                       key="theme_choice", label_visibility="collapsed")
         chosen_theme = STORY_THEMES[selected_theme_key]
         st.markdown(f'<div class="panel-card"><div class="mascot">{chosen_theme["mascot"]}</div>'
-                    f'<div class="world-name">Welcome to <b>{chosen_theme["world_name"]}</b>!</div></div>',
+                    f'<div class="world-name">Portal opened! Welcome to<br><b>{chosen_theme["world_name"]}</b>!</div></div>',
                     unsafe_allow_html=True)
     return selected_theme_key
 
@@ -1350,18 +1531,23 @@ def render_story_controls():
         target_word_count = st.slider("Story size (words)", min_value=MINIMUM_STORY_WORDS, max_value=MAXIMUM_STORY_WORDS,
                                       value=DEFAULT_STORY_WORDS, step=STORY_WORD_STEP, format="%d words",
                                       key="story_size_choice", label_visibility="collapsed")
-        st.markdown('<div class="panel-card"><p class="panel-title">🐢 Voice speed 🐇</p></div>', unsafe_allow_html=True)
+        length_mood = "Quick Tale ⚡" if target_word_count <= 60 else ("Big Adventure 🌟" if target_word_count >= 90 else "Magic Middle ✨")
+        st.markdown(f'<div class="control-impact">{target_word_count} words · {length_mood}</div>', unsafe_allow_html=True)
+        st.markdown('<div class="panel-card"><p class="panel-title">🐢 Sleepy Turtle → Zooming Rocket 🚀</p></div>', unsafe_allow_html=True)
         voice_speed = st.select_slider("Voice speed", options=VOICE_SPEED_CHOICES, value=DEFAULT_VOICE_SPEED,
                                        format_func=lambda speed_value: f"{speed_value:.2f}x",
                                        key="voice_speed_choice", label_visibility="collapsed")
+        speed_mood = "Sleepy Turtle 🐢" if voice_speed < 0.9 else ("Zooming Rocket 🚀" if voice_speed > 1.25 else "Just Right ⭐")
+        st.markdown(f'<div class="control-impact">{voice_speed:.2f}x · {speed_mood}</div>', unsafe_allow_html=True)
         st.markdown('<div class="panel-card"><p class="panel-title">🗣️ Storyteller voice</p></div>', unsafe_allow_html=True)
         selected_voice_key = st.selectbox("Storyteller voice", options=list(VOICE_PERSONAS.keys()),
                                           index=list(VOICE_PERSONAS.keys()).index(DEFAULT_VOICE_KEY),
                                           format_func=lambda voice_key: VOICE_PERSONAS[voice_key]["label"],
                                           key="voice_choice", label_visibility="collapsed")
         chosen_persona = VOICE_PERSONAS[selected_voice_key]
-        st.markdown(f'<div class="panel-card"><div class="mascot">{chosen_persona["avatar"]}</div>'
-                    f'<div class="world-name">{html.escape(chosen_persona["about"])}</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="character-card"><div class="mascot">{chosen_persona["avatar"]}</div>'
+                    f'<div class="world-name"><b>Your storyteller is ready!</b><br>'
+                    f'{html.escape(chosen_persona["about"])}</div></div>', unsafe_allow_html=True)
     return target_word_count, voice_speed, selected_voice_key
 
 
@@ -1404,14 +1590,13 @@ def increase_story_version():
     st.session_state["story_version"] += 1
 
 
-def show_grown_up_details(story_result, narration_result, loaded_models, theme_key, voice_key):
+def show_grown_up_details(story_result, narration_result, theme_key, voice_key):
     """
     Collapsible panel for parents / teachers / graders: timings (2 decimals), caption, models and downloads.
 
     Parameters:
         story_result (dict): caption, story and timings.
         narration_result (dict): audio and timings.
-        loaded_models (dict): models and their precision.
         theme_key (str): chosen theme.
         voice_key (str): chosen voice.
     """
@@ -1426,8 +1611,8 @@ def show_grown_up_details(story_result, narration_result, loaded_models, theme_k
         st.markdown(f"**What the picture shows (Stage 1):** {story_result['caption']}")
         st.markdown(f"**Theme:** {STORY_THEMES[theme_key]['label']} &nbsp;|&nbsp; **Voice:** {VOICE_PERSONAS[voice_key]['label']} "
                     f"&nbsp;|&nbsp; **Words:** {story_result['word_count']}")
-        st.markdown(f"**Models:** image-to-text `{IMAGE_CAPTION_MODEL_NAME}` ({loaded_models['caption']['precision']}) → "
-                    f"text-generation `{STORY_GENERATION_MODEL_NAME}` ({loaded_models['story']['precision']}) → "
+        st.markdown(f"**Models:** image-to-text `{IMAGE_CAPTION_MODEL_NAME}` ({story_result['caption_precision']}) → "
+                    f"text-generation `{STORY_GENERATION_MODEL_NAME}` ({story_result['story_precision']}) → "
                     f"speech: {narration_result['voice_engine']}")
         if story_result["used_backup_story"]:
             st.info("The story model had a problem, so a safe backup story was used this time.")
@@ -1472,10 +1657,6 @@ def main():
     sound_slot = st.empty()
     extras_area = st.container()
 
-    # Models warm only after the complete interface has rendered, and independent resources load concurrently.
-    with st.spinner("🪄 Waking up the story machine... (only the first time)"):
-        loaded_models = load_all_models()
-
     # ----- PROCESS PART -----
     story_result = None
     narration_result = None
@@ -1484,6 +1665,7 @@ def main():
         try:
             picture = open_uploaded_picture(uploaded_picture_file=uploaded_picture_file)
         except Exception:
+            LOGGER.exception("Uploaded picture could not be opened")
             with centre_column:
                 st.error("😕 Oops! That file is not a picture I can open. Please try a JPG or PNG picture.")
     if picture is not None:
@@ -1498,14 +1680,16 @@ def main():
             # New picture, theme, length or "another story": run all three stages.
             sound_label_slot.markdown('<p class="sound-label">🎙️ Your storyteller is getting ready...</p>', unsafe_allow_html=True)
             try:
-                new_story_result, new_narration_result = create_story_and_voice(
-                    loaded_models=loaded_models, picture=picture, theme_key=selected_theme_key,
-                    target_word_count=target_word_count, persona_settings=persona_settings,
-                    voice_speed=voice_speed, story_slot=story_slot, caption_slot=caption_slot)
+                with st.spinner("🪄 Building your story one magical step at a time..."):
+                    new_story_result, new_narration_result = create_story_and_voice(
+                        picture=picture, theme_key=selected_theme_key,
+                        target_word_count=target_word_count, persona_settings=persona_settings,
+                        voice_speed=voice_speed, story_slot=story_slot, caption_slot=caption_slot)
                 st.session_state.update({"story_request_key": story_request_key, "story_result": new_story_result,
                                          "narration_request_key": narration_request_key,
                                          "narration_result": new_narration_result, "celebrate_new_story": True})
             except Exception as stage_error:
+                LOGGER.exception("Complete picture-to-story request failed")
                 st.session_state["story_request_key"] = None
                 show_placeholder(display_slot=story_slot,
                                  placeholder_text=f"😕 Oops! I could not make a story from this picture. Please try another one. "
@@ -1515,11 +1699,11 @@ def main():
             sound_label_slot.markdown('<p class="sound-label">🎙️ Changing the storyteller voice...</p>', unsafe_allow_html=True)
             try:
                 changed_narration = create_narration_for_story(story_text=st.session_state["story_result"]["story"],
-                                                               persona_settings=persona_settings, voice_speed=voice_speed,
-                                                               loaded_models=loaded_models)
+                                                               persona_settings=persona_settings, voice_speed=voice_speed)
                 changed_narration.update({"total_seconds": changed_narration["voice_seconds"]})
                 st.session_state.update({"narration_request_key": narration_request_key, "narration_result": changed_narration})
             except Exception:
+                LOGGER.exception("Voice-only regeneration failed")
                 st.session_state["narration_request_key"] = None
                 with centre_column:
                     st.warning("🔇 The storyteller lost their voice. Please try another voice.")
@@ -1543,7 +1727,7 @@ def main():
         sound_slot.audio(narration_result["wav_bytes"], format="audio/wav", autoplay=True)
         with extras_area:
             st.button("🔄 Tell me another story!", on_click=increase_story_version, use_container_width=True)
-            show_grown_up_details(story_result=story_result, narration_result=narration_result, loaded_models=loaded_models,
+            show_grown_up_details(story_result=story_result, narration_result=narration_result,
                                   theme_key=selected_theme_key, voice_key=selected_voice_key)
         if st.session_state["celebrate_new_story"]:
             st.session_state["celebrate_new_story"] = False

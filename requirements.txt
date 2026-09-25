@@ -3,15 +3,15 @@
 # Web app framework (st.write_stream, st.audio autoplay and bordered layouts need >= 1.40)
 streamlit>=1.40.0,<2.0.0
 
-# Hugging Face pipelines (course rule: stay below Transformers 5.0)
-transformers>=4.45.0,<5.0.0
-tokenizers>=0.20.0,<1.0.0
-huggingface_hub>=0.24.0,<1.0.0
+# Hugging Face pipelines (>= 4.57 supports direct chat messages plus tokenizer_encode_kwargs; stay below 5.0)
+transformers>=4.57.0,<5.0.0
+tokenizers>=0.22.0,<0.24.0
+huggingface_hub>=0.34.0,<1.0.0
 safetensors>=0.4.1,<1.0.0
 accelerate>=0.34.0,<2.0.0
 
-# Deep learning engine (CPU). Kept below 2.10 so PyTorch's int8 dynamic quantization is available.
-torch>=2.2.0,<2.10.0
+# Deep learning engine (CPU). Qwen3 requires >= 2.6; kept below 2.10 for legacy int8 support on other models.
+torch>=2.6.0,<2.10.0
 
 # Pictures
 Pillow>=10.0.0,<12.0.0
@@ -25,7 +25,7 @@ soundfile>=0.12.1,<1.0.0
 gTTS>=2.5.0,<3.0.0
 requests>=2.31.0,<3.0.0
 
-# Fast local Hugging Face narration (four male and two child-style personas)
+# Fast local Hugging Face narration (Captain Finn, Sir Alan and child-style Giggle Grace)
 piper-tts>=1.8.0,<2.0.0
 onnxruntime>=1.20.0,<2.0.0
 pathvalidate>=3.2.0,<4.0.0
