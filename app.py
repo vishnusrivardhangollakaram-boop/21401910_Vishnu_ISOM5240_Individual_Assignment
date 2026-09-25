@@ -26,9 +26,10 @@ Model selection (10 candidates per stage, 10 test images, see README.md and benc
         Salesforce/blip-image-captioning-large, microsoft/git-base-coco, microsoft/git-large-coco, microsoft/git-base,
         microsoft/git-base-textcaps, microsoft/git-large-textcaps, microsoft/git-large,
         nlpconnect/vit-gpt2-image-captioning, ydshieh/vit-gpt2-coco-en
-    Stage 2 story generation ("text-generation"): Qwen/Qwen3-0.6B (chosen), Qwen/Qwen2.5-0.5B-Instruct,
-        Qwen/Qwen2.5-1.5B-Instruct,
-        HuggingFaceTB/SmolLM2-135M-Instruct, HuggingFaceTB/SmolLM2-360M-Instruct, HuggingFaceTB/SmolLM2-1.7B-Instruct,
+    Stage 2 story generation ("text-generation"): HuggingFaceTB/SmolLM2-360M-Instruct (chosen: smallest model that
+        still follows the picture/theme/length instructions, fastest on Streamlit Cloud's 2 CPU cores),
+        Qwen/Qwen3-0.6B (best story quality in the focused benchmark, slower), Qwen/Qwen2.5-0.5B-Instruct,
+        Qwen/Qwen2.5-1.5B-Instruct, HuggingFaceTB/SmolLM2-135M-Instruct, HuggingFaceTB/SmolLM2-1.7B-Instruct,
         TinyLlama/TinyLlama-1.1B-Chat-v1.0, google/flan-t5-base, google/flan-t5-small,
         roneneldan/TinyStories-Instruct-33M
     Stage 3 text-to-speech: gTTS UK/US/Australian/Indian English (chosen: familiar female voices, fast),
@@ -85,11 +86,13 @@ APP_NAME = "TaleTwinkle"
 APP_TAGLINE = "Drop in a picture. Hear a little world come alive."
 
 IMAGE_CAPTION_MODEL_NAME = "Salesforce/blip-image-captioning-base"
-STORY_GENERATION_MODEL_NAME = "Qwen/Qwen3-0.6B"
+STORY_GENERATION_MODEL_NAME = "HuggingFaceTB/SmolLM2-360M-Instruct"   # also supported: Qwen/Qwen2.5-0.5B-Instruct, Qwen/Qwen3-0.6B
+BFLOAT16_STORY_MODELS = ("Qwen/", "HuggingFaceTB/SmolLM2-")     # loaded directly in bfloat16 (no float32 memory spike)
 LOCAL_SPEECH_MODEL_NAME = "rhasspy/piper-voices"
 DEFAULT_PIPER_MODEL_FILE = "en/en_GB/alba/medium/en_GB-alba-medium.onnx"
-SHRINK_MODELS_WITH_INT8 = True              # int8 weights: ~3x smaller and faster on Streamlit Cloud's CPU
-KEEP_MODELS_LOADED = True                   # True: load BLIP + Qwen once at start-up and reuse them for every story
+SHRINK_MODELS_WITH_INT8 = False             # False: the caption model loads in ~3 s instead of ~14 s (int8 conversion skipped)
+KEEP_MODELS_LOADED = False                  # False: only one model in memory at a time (both together reach ~3 GB,
+                                            # Streamlit's limit, and the story then slows down badly)
 MEMORY_SAFETY_LIMIT_MB = 3100               # above this, models are released after use (both models = about 2.9 GB)
 DEFAULT_CPU_THREADS = 2                     # Streamlit Community Cloud gives each app about 2 CPU cores
 LOGGER = logging.getLogger(APP_NAME)
@@ -646,9 +649,9 @@ def load_story_pipeline(model_name):
     """
     Load the text-generation (story) pipeline once and warm it up.
 
-    Qwen3 uses bfloat16 directly. The focused benchmark found that converting Qwen3 from float32
-    to legacy dynamic int8 increased peak memory sharply, while its native bfloat16 checkpoint was
-    safer for Streamlit Cloud. Other candidates retain the int8-first fallback path for comparison.
+    Qwen (Qwen2.5, Qwen3) and SmolLM2 models load in bfloat16 directly. The focused benchmark found that converting
+    from float32 to legacy dynamic int8 increased peak memory sharply, while the native bfloat16 checkpoint
+    is safer for Streamlit Cloud. Other candidates keep the int8-first fallback path for comparison.
 
     Parameters:
         model_name (str): Hugging Face model id.
@@ -659,16 +662,16 @@ def load_story_pipeline(model_name):
     qwen3_chat_settings = get_story_chat_template_settings(model_name=model_name)
     story_pipeline = None
     LOGGER.info("Loading story model: %s", model_name)
-    if model_name.startswith("Qwen/Qwen3-"):
+    if model_name.startswith(BFLOAT16_STORY_MODELS):
         try:
             story_pipeline = pipeline("text-generation", model=model_name, device=-1, dtype=torch.bfloat16,
                                       token=get_hugging_face_token())
             model_precision = "bfloat16"
             story_pipeline(warm_up_messages, max_new_tokens=3, do_sample=False, **qwen3_chat_settings)
-            LOGGER.info("Story model ready: %s (%s, thinking disabled)", model_name, model_precision)
+            LOGGER.info("Story model ready: %s (%s)", model_name, model_precision)
             return {"pipeline": story_pipeline, "precision": model_precision}
         except Exception:
-            LOGGER.exception("Qwen3 story model failed to load: %s", model_name)
+            LOGGER.exception("bfloat16 story model failed to load: %s", model_name)
             if story_pipeline is not None:
                 del story_pipeline
             gc.collect()
@@ -748,6 +751,19 @@ def check_google_voice_available():
 def get_speech_lock():
     """
     One shared lock so each local Piper model speaks one sentence at a time (thread safety).
+
+    Returns:
+        threading.Lock: the lock.
+    """
+    return threading.Lock()
+
+
+@st.cache_resource(show_spinner=False)
+def get_story_writing_lock():
+    """
+    One shared lock so only ONE story is written at a time on the server. Streamlit Cloud gives the app
+    about 2 CPU cores; two stories at once would each run many times slower, so a second visitor waits
+    a few seconds instead.
 
     Returns:
         threading.Lock: the lock.
@@ -1049,8 +1065,11 @@ def stream_story_text(story_pipeline, story_messages, target_word_count, stream_
             yield new_text_piece
     except Empty:
         stream_progress["problems"].append(TimeoutError("The story model took too long."))
-    stop_event.set()
-    generation_thread.join(timeout=2)
+    finally:
+        # Always stop the model thread, also when the page reruns mid-story (e.g. a new picture is dropped),
+        # so an abandoned story never keeps using the CPU in the background.
+        stop_event.set()
+        generation_thread.join(timeout=2)
 
 
 def trim_story_to_word_limit(story_text, target_word_count, is_poem):
@@ -1668,11 +1687,20 @@ def create_story_and_voice(picture, theme_key, target_word_count, persona_settin
             local_speech_resources=generation_resources["local_speech"])
         # Scroll down so the child can watch the story being written.
         request_auto_scroll(scroll_slot=scroll_slot, target_selector=".st-key-live_story_box", also_show_audio=False)
-        story_writing_start_time = time.perf_counter()
-        story_generation = write_story_live(
-            story_pipeline=generation_resources["story"]["pipeline"], image_caption=picture_caption,
-            theme_key=theme_key, target_word_count=target_word_count, story_slot=story_slot,
-            queue_sentence_for_speech=queue_sentence_for_speech)
+        story_writing_lock = get_story_writing_lock()
+        if not story_writing_lock.acquire(blocking=False):
+            LOGGER.info("Another story is being written; waiting for the story model")
+            show_placeholder(display_slot=story_slot,
+                             placeholder_text="⏳ The storyteller is finishing another story... yours is next!")
+            story_writing_lock.acquire()
+        try:
+            story_writing_start_time = time.perf_counter()
+            story_generation = write_story_live(
+                story_pipeline=generation_resources["story"]["pipeline"], image_caption=picture_caption,
+                theme_key=theme_key, target_word_count=target_word_count, story_slot=story_slot,
+                queue_sentence_for_speech=queue_sentence_for_speech)
+        finally:
+            story_writing_lock.release()
         story_ready_time = time.perf_counter()
         story_writing_seconds = story_ready_time - story_writing_start_time
         LOGGER.info("Stage 2: story written in %.2f s (%d words)", story_writing_seconds, story_generation["word_count"])
