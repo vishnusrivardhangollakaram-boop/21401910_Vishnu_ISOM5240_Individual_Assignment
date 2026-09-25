@@ -50,6 +50,11 @@ def _widget(name):
 radio = _widget("radio"); slider = _widget("slider"); select_slider = _widget("select_slider"); selectbox = _widget("selectbox"); file_uploader = _widget("file_uploader")
 def button(label, on_click=None, **k): CALLS.append(("button", (label,), k)); return False
 def cache_resource(*a, **k):
-    if a and callable(a[0]): return a[0]
-    return lambda f: f
+    def decorate(function):
+        function._cache_settings = dict(k)
+        function._cache_clear_calls = []
+        function.clear = lambda *args, **kwargs: function._cache_clear_calls.append((args, kwargs))
+        return function
+    if a and callable(a[0]): return decorate(a[0])
+    return decorate
 cache_data = cache_resource
