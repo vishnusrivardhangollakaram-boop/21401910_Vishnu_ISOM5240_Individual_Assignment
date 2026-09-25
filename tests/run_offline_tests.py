@@ -3,7 +3,7 @@ run_offline_tests.py
 --------------------
 Automated functional tests for TaleTwinkle's app.py that run WITHOUT downloading any model.
 
-The folder tests/stubs holds small stand-ins for streamlit, transformers, torch and gTTS, so every
+The folder tests/stubs holds small stand-ins for Streamlit, Transformers, torch, gTTS and Piper, so every
 function in app.py (picture scaling, caption cleaning, story trimming, early stop, background speech,
 voice speed and character effects, fall-backs) and the full main() screen flow can be checked quickly
 on any computer. Real model quality and speed are measured with benchmark/TaleTwinkle_Model_Benchmark.ipynb
@@ -122,6 +122,11 @@ def test_picture_functions():
     record_result(test_name="Transparent PNG opened as RGB on white",
                   passed=opened_picture.mode == "RGB" and opened_picture.getpixel((1, 1)) == (255, 255, 255),
                   details=f"mode={opened_picture.mode}, pixel={opened_picture.getpixel((1, 1))}")
+    theme_backgrounds = [os.path.join(app.BACKGROUND_FOLDER, theme["background_file"])
+                         for theme in app.STORY_THEMES.values()]
+    record_result(test_name="All six dynamic theme backgrounds exist",
+                  passed=all(os.path.isfile(background_path) for background_path in theme_backgrounds),
+                  details=f"{sum(os.path.isfile(path) for path in theme_backgrounds)}/6 files found")
 
 
 def test_caption_and_story_functions():
@@ -204,7 +209,7 @@ def test_voice_functions():
         record_result(test_name=f"Voice speed {voice_speed:.2f}x keeps pitch",
                       passed=abs(measured_seconds - 30 / voice_speed) < 0.2 and abs(measured_pitch - 220) < 2,
                       details=f"{measured_seconds:.2f} s (expected {30 / voice_speed:.2f}), pitch {measured_pitch:.2f} Hz, took {elapsed_seconds:.2f} s")
-    for persona_key in ("polly_parrot", "bruno_bear"):
+    for persona_key in ("polly_parrot", "buddy_ben", "giggle_grace"):
         persona_settings = app.VOICE_PERSONAS[persona_key]
         shifted_tone = app.change_pitch_and_tempo(audio_samples=test_tone, sample_rate=sample_rate,
                                                   semitone_shift=persona_settings["semitone_shift"], tempo_factor=persona_settings["tempo_factor"])
@@ -221,6 +226,16 @@ def test_voice_functions():
     voice_order = list(app.VOICE_PERSONAS.keys())[:3]
     record_result(test_name="Voice order: Lily, then Parrot, then Kitten", passed=voice_order == ["lily_british", "polly_parrot", "whiskers_kitten"],
                   details=f"{voice_order}")
+    male_voice_keys = [voice_key for voice_key, persona in app.VOICE_PERSONAS.items()
+                       if persona["engine"] == "piper" and persona.get("semitone_shift") == 0]
+    kid_voice_keys = [voice_key for voice_key in ("buddy_ben", "giggle_grace")
+                      if voice_key in app.VOICE_PERSONAS]
+    record_result(test_name="Four distinct male voices replace Uncle Max and Bruno",
+                  passed=len(male_voice_keys) == 4 and "max_man" not in app.VOICE_PERSONAS
+                  and "bruno_bear" not in app.VOICE_PERSONAS,
+                  details=f"male choices={male_voice_keys}")
+    record_result(test_name="One boy-style and one girl-style voice are available",
+                  passed=kid_voice_keys == ["buddy_ben", "giggle_grace"], details=f"kid choices={kid_voice_keys}")
     robot_tone = app.add_robot_effect(audio_samples=test_tone[:sample_rate], sample_rate=sample_rate)
     record_result(test_name="Robot effect changes the sound", passed=not np.allclose(robot_tone, test_tone[:sample_rate]), details="60 Hz buzz added")
     mp3_buffer = io.BytesIO()
@@ -239,8 +254,8 @@ def test_screen_flow():
     first_visit_calls = run_app_once()
     placeholder_count = sum(1 for call in first_visit_calls if call[0] == "empty.markdown" and "placeholder-card" in call[1][0])
     greeting_players = [call for call in first_visit_calls if call[0] == "empty.audio"]
-    record_result(test_name="First visit: picture + story placeholders and a greeting audio player are shown",
-                  passed=placeholder_count == 2 and len(greeting_players) == 1 and not greeting_players[0][2].get("autoplay"),
+    record_result(test_name="First visit: picture, caption and story placeholders plus greeting audio are shown",
+                  passed=placeholder_count == 3 and len(greeting_players) == 1 and not greeting_players[0][2].get("autoplay"),
                   details=f"{placeholder_count} placeholders, greeting player (no autoplay)")
     record_result(test_name="No background music anywhere", passed=not any(call[2].get("loop") for call in first_visit_calls if call[0].endswith("audio"))
                   and not hasattr(app, "load_theme_music"), details="music code and files removed")
@@ -258,6 +273,12 @@ def test_screen_flow():
                   passed="empty.image" in call_names and "write_stream" in call_names and len(story_audio) == 1
                   and story_audio[0][2].get("autoplay") is True and "balloons" in call_names,
                   details=f"caption='{story_result['caption']}', {story_result['word_count']} words")
+    record_result(test_name="Caption is displayed directly below the uploaded image",
+                  passed=any(call[0] == "empty.markdown" and "caption-card" in call[1][0]
+                             for call in upload_calls), details=story_result["caption"])
+    record_result(test_name="Streaming story is enclosed in the white live-story panel",
+                  passed=any(call[0] == "markdown" and "live-story-marker" in call[1][0]
+                             for call in upload_calls), details="live story panel marker rendered")
     story_card_index = max(index for index, call in enumerate(upload_calls) if call[0] == "empty.markdown" and "story-card" in call[1][0])
     audio_index = call_names.index("empty.audio")
     record_result(test_name="Story card is shown BEFORE the audio player", passed=story_card_index < audio_index,
@@ -329,16 +350,16 @@ def test_fallbacks():
     st.WIDGET_VALUES["voice_choice"] = "amy_american"
     st.session_state["story_version"] += 1
     run_app_once()
-    record_result(test_name="Google TTS offline -> Hugging Face voice used, story still narrated",
-                  passed="backup" in st.session_state["narration_result"]["voice_engine"],
+    record_result(test_name="Google TTS offline -> local Piper voice used, story still narrated",
+                  passed="fallback" in st.session_state["narration_result"]["voice_engine"],
                   details=st.session_state["narration_result"]["voice_engine"])
     gtts.gTTS.write_to_fp = original_write
 
-    st.WIDGET_VALUES["voice_choice"] = "max_man"
+    st.WIDGET_VALUES["voice_choice"] = "captain_finn"
     st.session_state["story_version"] += 1
     run_app_once()
-    record_result(test_name="Man's voice uses the local Hugging Face pipeline",
-                  passed="Hugging Face pipeline" in st.session_state["narration_result"]["voice_engine"],
+    record_result(test_name="Male voice uses a local Hugging Face Piper model",
+                  passed="local Hugging Face ONNX model" in st.session_state["narration_result"]["voice_engine"],
                   details=st.session_state["narration_result"]["voice_engine"])
 
 
