@@ -164,11 +164,13 @@ def test_caption_and_story_functions():
     record_result(test_name="Prompt contains caption, theme, length and 'no title'",
                   passed="a dog with a ball" in story_messages[1]["content"] and "75 words" in story_messages[1]["content"]
                   and "Make it magical." in story_messages[1]["content"], details="chat messages built")
-    qwen3_settings = app.get_story_chat_template_settings(model_name=app.STORY_GENERATION_MODEL_NAME)
-    record_result(test_name="Qwen3 chat uses direct messages with thinking disabled",
-                  passed=app.STORY_GENERATION_MODEL_NAME == "Qwen/Qwen3-0.6B"
-                  and qwen3_settings == {"tokenizer_encode_kwargs": {"enable_thinking": False}},
-                  details="pipeline(messages), add_generation_prompt=True automatically, enable_thinking=False")
+    qwen3_settings = app.get_story_chat_template_settings(model_name="Qwen/Qwen3-0.6B")
+    qwen25_settings = app.get_story_chat_template_settings(model_name="Qwen/Qwen2.5-0.5B-Instruct")
+    smollm2_settings = app.get_story_chat_template_settings(model_name="HuggingFaceTB/SmolLM2-360M-Instruct")
+    record_result(test_name="Chat settings: Qwen3 thinking disabled; Qwen2.5 and SmolLM2 need none; bfloat16 loading",
+                  passed=qwen3_settings == {"tokenizer_encode_kwargs": {"enable_thinking": False}} and qwen25_settings == {}
+                  and smollm2_settings == {} and app.STORY_GENERATION_MODEL_NAME.startswith(app.BFLOAT16_STORY_MODELS),
+                  details=f"production story model: {app.STORY_GENERATION_MODEL_NAME}")
 
 
 def test_background_speech_queue():
@@ -177,7 +179,7 @@ def test_background_speech_queue():
     stream_progress = {"text": "", "queued_sentences": 0}
     for text_piece in ["The dog ", "ran fast. ", "The cat ", "jumped! Then", " they slept."]:
         stream_progress["text"] += text_piece
-        app.queue_finished_sentences(stream_progress=stream_progress, queue_sentence_for_speech=queued_sentences.append)
+        app.queue_finished_sentences(stream_progress=stream_progress, queue_sentence_for_speech=lambda sentence_text: queued_sentences.append(sentence_text))
     record_result(test_name="Finished sentences queued one by one during streaming",
                   passed=queued_sentences == ["The dog ran fast.", "The cat jumped!", "Then they slept."],
                   details=f"{queued_sentences}")
@@ -195,7 +197,7 @@ def test_resource_controls():
                   details=str(cache_limits))
     flow_source = inspect.getsource(app.create_story_and_voice)
     caption_load_position = flow_source.index("load_caption_pipeline")
-    caption_release_position = flow_source.index("clear_cached_model(load_caption_pipeline")
+    caption_release_position = flow_source.index("clear_cached_model(cached_loader=load_caption_pipeline")
     generation_load_position = flow_source.index("load_story_and_voice_models")
     record_result(test_name="BLIP is released before Qwen and Piper load",
                   passed=caption_load_position < caption_release_position < generation_load_position,
@@ -295,9 +297,14 @@ def test_screen_flow():
                   details=f"{placeholder_count} placeholders, greeting player (no autoplay)")
     record_result(test_name="No background music anywhere", passed=not any(call[2].get("loop") for call in first_visit_calls if call[0].endswith("audio"))
                   and not hasattr(app, "load_theme_music"), details="music code and files removed")
-    record_result(test_name="Greeting does not load caption or story models",
-                  passed=len(torch.QUANTIZE_CALLS) == quantize_calls_before_first_visit,
-                  details="no ML model quantization on an empty first visit")
+    first_visit_tasks = [call["task"] for call in transformers.PIPELINE_CALLS[pipeline_calls_before_first_visit:]]
+    models_preloaded = "image-to-text" in first_visit_tasks and "text-generation" in first_visit_tasks
+    record_result(test_name="Start-up model loading follows KEEP_MODELS_LOADED",
+                  passed=models_preloaded == app.KEEP_MODELS_LOADED,
+                  details=f"KEEP_MODELS_LOADED={app.KEEP_MODELS_LOADED}, models preloaded={models_preloaded}")
+    record_result(test_name="PyTorch limited to the usable CPU cores",
+                  passed=torch.get_num_threads() == app.detect_available_cpu_cores() >= 1,
+                  details=f"{torch.get_num_threads()} threads")
 
     gtts.REQUESTS.clear()
     st.WIDGET_VALUES["picture_upload"] = make_fake_upload(picture_bytes=make_picture_bytes(picture_format="JPEG"))
@@ -307,9 +314,13 @@ def test_screen_flow():
     story_result = st.session_state["story_result"]
     narration_result = st.session_state["narration_result"]
     upload_model_tasks = [call["task"] for call in transformers.PIPELINE_CALLS[pipeline_calls_before_first_visit:]]
-    record_result(test_name="Caption and story models load only after image upload",
+    record_result(test_name="Caption and story models are used for the first story",
                   passed="image-to-text" in upload_model_tasks and "text-generation" in upload_model_tasks,
-                  details="BLIP then Qwen loaded for the first story request")
+                  details="BLIP then Qwen")
+    record_result(test_name="Stage timings recorded separately (model loading vs writing)",
+                  passed=all(timing_name in story_result for timing_name in
+                             ("caption_load_seconds", "story_load_seconds", "story_writing_seconds")),
+                  details=f"story writing {story_result['story_writing_seconds']:.2f} s")
     record_result(test_name="Upload: picture shown, story streamed, narration autoplays (no button click)",
                   passed="empty.image" in call_names and "write_stream" in call_names and len(story_audio) == 1
                   and story_audio[0][2].get("autoplay") is True and "balloons" in call_names,
@@ -333,9 +344,18 @@ def test_screen_flow():
                   details=f"first words {story_result['first_words_seconds']:.2f} s, story {story_result['story_seconds']:.2f} s, "
                           f"voice ready {narration_result['total_seconds']:.2f} s (voice {narration_result['voice_seconds']:.2f} s after story)")
 
+    scroll_scripts = [call[1][0] for call in upload_calls if call[0] == "components.html"]
+    record_result(test_name="Auto-scroll: to the live story while writing, then to the story + audio when ready",
+                  passed=len(scroll_scripts) == 2 and ".st-key-live_story_box" in scroll_scripts[0]
+                  and ".story-card" in scroll_scripts[1] and "audio" in scroll_scripts[1]
+                  and "scrollIntoView" in scroll_scripts[1],
+                  details=f"{len(scroll_scripts)} scroll requests during the first story")
+
     rerun_calls = run_app_once()
     record_result(test_name="Rerun with same choices does not rewrite the story",
                   passed="write_stream" not in [call[0] for call in rerun_calls], details="story reused from session state")
+    record_result(test_name="Auto-scroll does not repeat on a plain rerun",
+                  passed=not any(call[0] == "components.html" for call in rerun_calls), details="no scroll request")
 
     st.WIDGET_VALUES["voice_choice"] = "polly_parrot"
     st.WIDGET_VALUES["voice_speed_choice"] = 1.5
@@ -344,6 +364,9 @@ def test_screen_flow():
                   passed="write_stream" not in [call[0] for call in voice_change_calls]
                   and any(call[0] == "empty.audio" and call[2].get("autoplay") for call in voice_change_calls),
                   details="new narration, same story")
+    record_result(test_name="Auto-scroll to the new audio after a voice change",
+                  passed=sum(1 for call in voice_change_calls if call[0] == "components.html") == 1,
+                  details="one scroll request")
 
     st.WIDGET_VALUES["theme_choice"] = "ocean_magic"
     theme_change_calls = run_app_once()
@@ -404,6 +427,35 @@ def test_fallbacks():
                   details=st.session_state["narration_result"]["voice_engine"])
 
 
+def test_model_memory_policy():
+    """Models stay loaded between stories, but are released when memory is high or the setting is off."""
+    st.WIDGET_VALUES["picture_upload"] = make_fake_upload(picture_bytes=make_picture_bytes(picture_format="PNG"))
+    caption_clears_before = len(app.load_caption_pipeline._cache_clear_calls)
+    story_clears_before = len(app.load_story_pipeline._cache_clear_calls)
+    original_memory_reader = app.get_process_memory_mb
+    original_keep_setting = app.KEEP_MODELS_LOADED
+    app.KEEP_MODELS_LOADED = True
+    app.get_process_memory_mb = lambda: 1500.0
+    st.session_state["story_version"] += 1
+    run_app_once()
+    record_result(test_name="Normal memory: models stay loaded for the next story",
+                  passed=len(app.load_caption_pipeline._cache_clear_calls) == caption_clears_before
+                  and len(app.load_story_pipeline._cache_clear_calls) == story_clears_before,
+                  details="no model released at 1500 MB")
+    app.get_process_memory_mb = lambda: app.MEMORY_SAFETY_LIMIT_MB + 200.0
+    st.session_state["story_version"] += 1
+    run_app_once()
+    record_result(test_name="High memory: models are released automatically after use",
+                  passed=len(app.load_caption_pipeline._cache_clear_calls) > caption_clears_before
+                  and len(app.load_story_pipeline._cache_clear_calls) > story_clears_before,
+                  details=f"released above {app.MEMORY_SAFETY_LIMIT_MB} MB")
+    app.get_process_memory_mb = original_memory_reader
+    app.KEEP_MODELS_LOADED = False
+    record_result(test_name="KEEP_MODELS_LOADED = False restores release-after-every-story",
+                  passed=app.should_release_models() and not app.preload_story_models(), details="setting respected")
+    app.KEEP_MODELS_LOADED = original_keep_setting
+
+
 def write_results_markdown(file_path):
     """
     Save the results as a markdown table (copied into README.md).
@@ -433,6 +485,7 @@ def main():
     test_voice_functions()
     test_screen_flow()
     test_fallbacks()
+    test_model_memory_policy()
     write_results_markdown(file_path=os.path.join(TESTS_FOLDER, "offline_test_results.md"))
     passed_count = sum(1 for result in TEST_RESULTS if result["passed"])
     print(f"\n{passed_count}/{len(TEST_RESULTS)} tests passed")
