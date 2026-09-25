@@ -51,11 +51,13 @@ Acknowledgement: generative AI (Claude and ChatGPT) was used as a coding assista
 # IMPORT PART
 # ==============================
 import base64
+import ctypes
 import gc
 import hashlib
 import html
 import io
 import logging
+import math
 import os
 import re
 import shutil
@@ -87,6 +89,9 @@ STORY_GENERATION_MODEL_NAME = "Qwen/Qwen3-0.6B"
 LOCAL_SPEECH_MODEL_NAME = "rhasspy/piper-voices"
 DEFAULT_PIPER_MODEL_FILE = "en/en_GB/alba/medium/en_GB-alba-medium.onnx"
 SHRINK_MODELS_WITH_INT8 = True              # int8 weights: ~3x smaller and faster on Streamlit Cloud's CPU
+KEEP_MODELS_LOADED = True                   # True: load BLIP + Qwen once at start-up and reuse them for every story
+MEMORY_SAFETY_LIMIT_MB = 2300               # if the app uses more memory than this, models are released after use
+DEFAULT_CPU_THREADS = 2                     # Streamlit Community Cloud gives each app about 2 CPU cores
 LOGGER = logging.getLogger(APP_NAME)
 if not LOGGER.handlers:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
@@ -445,6 +450,105 @@ def get_hugging_face_token():
     return os.environ.get("HF_TOKEN")
 
 
+def detect_available_cpu_cores():
+    """
+    Find how many CPU cores this app is really allowed to use. On Streamlit Cloud the container sees
+    the whole host machine's cores but may only use about 2, so PyTorch would otherwise start far too
+    many threads that slow each other down.
+
+    Returns:
+        int: number of usable CPU cores (at least 1).
+    """
+    try:
+        # cgroup v2: "quota period", e.g. "200000 100000" means 2 cores.
+        with open("/sys/fs/cgroup/cpu.max", encoding="utf-8") as cpu_limit_file:
+            cpu_quota_text, cpu_period_text = cpu_limit_file.read().split()[:2]
+        if cpu_quota_text != "max":
+            return max(1, math.ceil(int(cpu_quota_text) / int(cpu_period_text)))
+    except (OSError, ValueError):
+        pass
+    try:
+        # cgroup v1: separate quota and period files.
+        with open("/sys/fs/cgroup/cpu/cpu.cfs_quota_us", encoding="utf-8") as quota_file:
+            cpu_quota = int(quota_file.read().strip())
+        with open("/sys/fs/cgroup/cpu/cpu.cfs_period_us", encoding="utf-8") as period_file:
+            cpu_period = int(period_file.read().strip())
+        if cpu_quota > 0:
+            return max(1, math.ceil(cpu_quota / cpu_period))
+    except (OSError, ValueError):
+        pass
+    return min(os.cpu_count() or 1, DEFAULT_CPU_THREADS)
+
+
+@st.cache_resource(show_spinner=False)
+def configure_cpu_threads():
+    """
+    Tell PyTorch to use exactly the usable number of CPU cores (done once per server).
+
+    Returns:
+        int: the number of PyTorch threads now in use.
+    """
+    usable_cpu_cores = detect_available_cpu_cores()
+    torch.set_num_threads(usable_cpu_cores)
+    LOGGER.info("PyTorch threads set to %d (machine reports %s cores)", torch.get_num_threads(), os.cpu_count())
+    return torch.get_num_threads()
+
+
+def get_process_memory_mb():
+    """
+    Read how much memory (RAM) this app is using right now.
+
+    Returns:
+        float or None: memory in MB, or None if it cannot be read on this system.
+    """
+    try:
+        with open("/proc/self/status", encoding="utf-8") as process_status_file:
+            for status_line in process_status_file:
+                if status_line.startswith("VmRSS:"):
+                    return int(status_line.split()[1]) / 1024
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
+def log_memory_use(moment_description):
+    """
+    Write the current memory use to the log (visible in Streamlit Cloud: Manage app -> logs).
+
+    Parameters:
+        moment_description (str): what just happened, e.g. "after loading the story model".
+    Returns:
+        float or None: memory in MB.
+    """
+    memory_mb = get_process_memory_mb()
+    if memory_mb is not None:
+        LOGGER.info("Memory %s: %.2f MB (safety limit %d MB)", moment_description, memory_mb, MEMORY_SAFETY_LIMIT_MB)
+    return memory_mb
+
+
+def memory_is_too_high():
+    """
+    Check whether the app is close to Streamlit Cloud's memory limit.
+
+    Returns:
+        bool: True if memory use is above MEMORY_SAFETY_LIMIT_MB.
+    """
+    memory_mb = get_process_memory_mb()
+    return memory_mb is not None and memory_mb > MEMORY_SAFETY_LIMIT_MB
+
+
+def return_free_memory_to_system():
+    """
+    Collect unused Python objects and ask the C library to hand freed memory back to the system,
+    so the memory figure really drops after a model is released.
+    """
+    gc.collect()
+    try:
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except (OSError, AttributeError):
+        pass
+
+
 def get_story_chat_template_settings(model_name):
     """
     Return model-specific chat-template controls for the Transformers pipeline.
@@ -497,7 +601,7 @@ def clear_cached_model(cached_loader, loader_arguments=()):
             clear_function(*loader_arguments)
         except TypeError:
             clear_function()
-    gc.collect()
+    return_free_memory_to_system()
 
 
 @st.cache_resource(show_spinner=False)
@@ -685,6 +789,39 @@ def release_stage_two_and_three_models():
     clear_cached_model(cached_loader=load_story_pipeline, loader_arguments=(STORY_GENERATION_MODEL_NAME,))
     clear_cached_model(cached_loader=load_piper_voice)
     LOGGER.info("Released Stage 2 and Stage 3 model caches")
+
+
+def should_release_models():
+    """
+    Decide whether models must be released after use: always when KEEP_MODELS_LOADED is False,
+    otherwise only when memory is above the safety limit (protects the app from being stopped).
+
+    Returns:
+        bool: True if models should be released now.
+    """
+    if not KEEP_MODELS_LOADED:
+        return True
+    if memory_is_too_high():
+        LOGGER.warning("Memory above %d MB: releasing models after this step", MEMORY_SAFETY_LIMIT_MB)
+        return True
+    return False
+
+
+def preload_story_models():
+    """
+    Load and warm up the caption and story models once when the app starts, so every story
+    (including the first one after start-up) skips the ~25 s of model loading.
+
+    Returns:
+        bool: True if the models are loaded and kept in memory.
+    """
+    if not KEEP_MODELS_LOADED:
+        return False
+    load_caption_pipeline(model_name=IMAGE_CAPTION_MODEL_NAME)
+    log_memory_use(moment_description="after loading the caption model")
+    load_story_pipeline(model_name=STORY_GENERATION_MODEL_NAME)
+    log_memory_use(moment_description="after loading the story model")
+    return True
 
 
 # ---------- 3. Picture functions ----------
@@ -1407,7 +1544,8 @@ def create_narration_for_story(story_text, persona_settings, voice_speed):
             speech_workers.shutdown(wait=False, cancel_futures=True)
         if local_speech_resources is not None:
             del local_speech_resources
-        clear_cached_model(cached_loader=load_piper_voice)
+        if should_release_models():
+            clear_cached_model(cached_loader=load_piper_voice)
 
 
 def describe_voice_engine(voice_engine, persona_settings, used_fallback_voice):
@@ -1469,7 +1607,7 @@ def create_greeting_audio(voice_key, voice_speed):
         LOGGER.exception("Greeting audio failed for voice: %s", voice_key)
         return b""
     finally:
-        if used_piper:
+        if used_piper and should_release_models():
             clear_cached_model(cached_loader=load_piper_voice)
 
 
@@ -1497,7 +1635,9 @@ def create_story_and_voice(picture, theme_key, target_word_count, persona_settin
     caption_resources = None
     caption_precision = "unknown"
     try:
+        caption_load_start_time = time.perf_counter()
         caption_resources = load_caption_pipeline(model_name=IMAGE_CAPTION_MODEL_NAME)
+        caption_load_seconds = time.perf_counter() - caption_load_start_time
         caption_precision = caption_resources["precision"]
         picture_caption, caption_seconds = describe_picture(
             caption_pipeline=caption_resources["pipeline"],
@@ -1508,15 +1648,19 @@ def create_story_and_voice(picture, theme_key, target_word_count, persona_settin
     finally:
         if caption_resources is not None:
             del caption_resources
-        clear_cached_model(cached_loader=load_caption_pipeline, loader_arguments=(IMAGE_CAPTION_MODEL_NAME,))
-        LOGGER.info("Released Stage 1 model after caption generation")
+        if should_release_models():
+            clear_cached_model(cached_loader=load_caption_pipeline, loader_arguments=(IMAGE_CAPTION_MODEL_NAME,))
+            LOGGER.info("Released Stage 1 model after caption generation")
     show_caption_card(caption_slot=caption_slot, picture_caption=picture_caption)
-    LOGGER.info("Stage 1 caption completed in %.2f seconds", caption_seconds)
+    LOGGER.info("Stage 1: caption model ready in %.2f s, caption written in %.2f s", caption_load_seconds, caption_seconds)
 
     generation_resources = None
     speech_workers = None
     try:
+        story_load_start_time = time.perf_counter()
         generation_resources = load_story_and_voice_models(persona_settings=persona_settings)
+        story_load_seconds = time.perf_counter() - story_load_start_time
+        LOGGER.info("Stage 2: story model (and voice) ready in %.2f s", story_load_seconds)
         voice_engine = choose_voice_engine(persona_settings=persona_settings,
                                            google_voice_available=generation_resources["google_voice_available"])
         speech_workers, speech_jobs, queue_sentence_for_speech = start_speech_queue(
@@ -1524,12 +1668,14 @@ def create_story_and_voice(picture, theme_key, target_word_count, persona_settin
             local_speech_resources=generation_resources["local_speech"])
         # Scroll down so the child can watch the story being written.
         request_auto_scroll(scroll_slot=scroll_slot, target_selector=".st-key-live_story_box", also_show_audio=False)
+        story_writing_start_time = time.perf_counter()
         story_generation = write_story_live(
             story_pipeline=generation_resources["story"]["pipeline"], image_caption=picture_caption,
             theme_key=theme_key, target_word_count=target_word_count, story_slot=story_slot,
             queue_sentence_for_speech=queue_sentence_for_speech)
         story_ready_time = time.perf_counter()
-        LOGGER.info("Stage 2 story completed in %.2f seconds", story_ready_time - start_time)
+        story_writing_seconds = story_ready_time - story_writing_start_time
+        LOGGER.info("Stage 2: story written in %.2f s (%d words)", story_writing_seconds, story_generation["word_count"])
         show_story_card(story_slot=story_slot, story_text=story_generation["story"],
                         word_count=story_generation["word_count"])
 
@@ -1542,7 +1688,7 @@ def create_story_and_voice(picture, theme_key, target_word_count, persona_settin
         wav_bytes, audio_seconds = assemble_narration(sentence_clips=sentence_clips,
                                                       persona_settings=persona_settings, voice_speed=voice_speed)
         voice_ready_time = time.perf_counter()
-        LOGGER.info("Stage 3 narration completed in %.2f seconds", voice_ready_time - story_ready_time)
+        LOGGER.info("Stage 3: narration ready %.2f s after the story", voice_ready_time - story_ready_time)
         story_precision = generation_resources["story"]["precision"]
     except Exception:
         LOGGER.exception("Stage 2 or Stage 3 generation failed")
@@ -1552,19 +1698,25 @@ def create_story_and_voice(picture, theme_key, target_word_count, persona_settin
             speech_workers.shutdown(wait=False, cancel_futures=True)
         if generation_resources is not None:
             del generation_resources
-        release_stage_two_and_three_models()
+        if should_release_models():
+            release_stage_two_and_three_models()
+        log_memory_use(moment_description="after the story run")
 
     first_words_time = story_generation["first_words_time"] or story_ready_time
     story_result = {"caption": picture_caption, "story": story_generation["story"],
                     "word_count": story_generation["word_count"], "used_backup_story": story_generation["used_backup_story"],
                     "caption_seconds": caption_seconds, "first_words_seconds": first_words_time - start_time,
                     "story_seconds": story_ready_time - start_time, "caption_precision": caption_precision,
-                    "story_precision": story_precision}
+                    "story_precision": story_precision, "caption_load_seconds": caption_load_seconds,
+                    "story_load_seconds": story_load_seconds, "story_writing_seconds": story_writing_seconds}
     narration_result = {"wav_bytes": wav_bytes, "audio_seconds": audio_seconds,
                         "voice_seconds": voice_ready_time - story_ready_time, "total_seconds": voice_ready_time - start_time,
                         "voice_engine": describe_voice_engine(voice_engine=voice_engine, persona_settings=persona_settings,
                                                               used_fallback_voice=used_fallback_voice)}
-    LOGGER.info("Completed picture-to-story run in %.2f seconds", narration_result["total_seconds"])
+    LOGGER.info("TIMING SUMMARY | caption model %.2f s | caption %.2f s | story model %.2f s | first words at %.2f s | "
+                "story writing %.2f s | voice after story %.2f s | TOTAL %.2f s",
+                caption_load_seconds, caption_seconds, story_load_seconds, story_result["first_words_seconds"],
+                story_writing_seconds, narration_result["voice_seconds"], narration_result["total_seconds"])
     return story_result, narration_result
 
 
@@ -1754,6 +1906,10 @@ def show_grown_up_details(story_result, narration_result, theme_key, voice_key):
         timing_columns[1].metric("First story words", f"{story_result['first_words_seconds']:.2f} s")
         timing_columns[2].metric("Whole story", f"{story_result['story_seconds']:.2f} s")
         timing_columns[3].metric("Voice ready", f"{narration_result['total_seconds']:.2f} s")
+        if "story_writing_seconds" in story_result:
+            st.caption(f"Stage details: caption model ready in {story_result['caption_load_seconds']:.2f} s · "
+                       f"caption {story_result['caption_seconds']:.2f} s · story model ready in "
+                       f"{story_result['story_load_seconds']:.2f} s · story writing {story_result['story_writing_seconds']:.2f} s.")
         st.caption(f"Voice finished {narration_result['voice_seconds']:.2f} s after the story, because sentences were "
                    f"spoken in the background while the story was being written. "
                    f"Audio length: {narration_result['audio_seconds']:.2f} s.")
@@ -2005,12 +2161,17 @@ def main():
     """
     configure_page()
     initialise_session_state()
+    configure_cpu_threads()
     current_theme_key = st.session_state.get("theme_choice", DEFAULT_THEME_KEY)
     apply_page_style(theme_settings=STORY_THEMES[current_theme_key])
     render_header()
 
     # ----- INPUT PART -----
     child_choices, screen_slots = collect_child_choices()
+
+    # Load and warm up the models once when the app starts (kept for every later story).
+    with st.spinner("🪄 Waking up the story machine... (only the first time)"):
+        preload_story_models()
 
     # ----- PROCESS PART -----
     picture = open_picture_safely(uploaded_picture_file=child_choices["uploaded_picture_file"],
