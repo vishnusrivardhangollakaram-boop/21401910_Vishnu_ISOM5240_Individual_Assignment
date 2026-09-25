@@ -57,7 +57,7 @@ Send the zip (or just the Excel file) back so the final models can be locked in 
 add_markdown_cell("## 0. Install packages")
 add_code_cell(r"""
 # Install the same library versions the Streamlit app uses (transformers < 5.0, as in the course).
-%pip -q install "transformers>=4.45.0,<5.0" "sentence-transformers>=3.0.0,<6.0" "datasets>=2.20.0,<5.0" \
+%pip -q install "transformers>=4.57.0,<5.0" "torch>=2.6.0,<2.10.0" "sentence-transformers>=3.0.0,<6.0" "datasets>=2.20.0,<5.0" \
     "textstat>=0.7.3,<1.0" "jiwer>=3.0.0,<5.0" "gTTS>=2.5.0,<3.0" "soundfile>=0.12.1,<1.0" \
     "kokoro>=0.9.4,<1.0" "piper-tts>=1.8.0,<2.0" "onnxruntime>=1.20.0,<2.0" \
     "pyttsx3>=2.90,<3.0" "openpyxl>=3.1.0,<4.0" "psutil>=5.9.0,<8.0"
@@ -130,6 +130,7 @@ CAPTION_MODEL_CANDIDATES = [
 # ---- Stage 2: 10 story-generation candidates (pipeline task: text-generation) ----
 # prompt_style: "chat" = instruction model with chat template, "tinystories" / "genre" / "plain" = raw text models
 STORY_MODEL_CANDIDATES = [
+    {"model_name": "Qwen/Qwen3-0.6B",                       "prompt_style": "qwen3_chat"},
     {"model_name": "Qwen/Qwen2.5-0.5B-Instruct",            "prompt_style": "chat"},
     {"model_name": "Qwen/Qwen2.5-1.5B-Instruct",            "prompt_style": "chat"},
     {"model_name": "HuggingFaceTB/SmolLM2-135M-Instruct",   "prompt_style": "chat"},
@@ -138,7 +139,6 @@ STORY_MODEL_CANDIDATES = [
     {"model_name": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",    "prompt_style": "chat"},
     {"model_name": "google/flan-t5-base",                   "prompt_style": "t5"},
     {"model_name": "google/flan-t5-small",                  "prompt_style": "t5"},
-    {"model_name": "roneneldan/TinyStories-33M",            "prompt_style": "plain"},
     {"model_name": "roneneldan/TinyStories-Instruct-33M",   "prompt_style": "tinystories"},
 ]
 # The app shrinks models to int8 (PyTorch dynamic quantization) for speed on Streamlit Cloud: test the same way.
@@ -497,9 +497,12 @@ for story_candidate in STORY_MODEL_CANDIDATES:
                 generation_settings.update({"pad_token_id": end_of_text_id, "return_full_text": False})
             set_seed(RANDOM_SEED)
             start_time = time.perf_counter()
-            if prompt_style == "chat":
+            if prompt_style in ("chat", "qwen3_chat"):
+                chat_template_settings = ({"tokenizer_encode_kwargs": {"enable_thinking": False}}
+                                          if prompt_style == "qwen3_chat" else {})
                 story_output = story_pipeline(build_story_messages(image_caption=image_caption, theme_name=theme_name,
-                                                                   target_word_count=target_word_count), **generation_settings)
+                                                                   target_word_count=target_word_count),
+                                              **chat_template_settings, **generation_settings)
                 generated_value = story_output[0]["generated_text"]
                 raw_story = generated_value[-1]["content"] if isinstance(generated_value, list) else generated_value
             else:
