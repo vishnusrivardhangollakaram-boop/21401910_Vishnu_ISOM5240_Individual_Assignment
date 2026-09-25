@@ -940,10 +940,14 @@ def build_story_messages(image_caption, theme_instruction, target_word_count):
     Returns:
         list[dict]: system and user messages.
     """
-    # A short prompt on purpose: on a CPU, every prompt word adds reading time before the first story word appears.
-    system_message = "You tell happy, safe stories for children aged 3 to 10, with short sentences and simple words."
-    user_message = (f"Picture: {image_caption}. Write a story about it, about {target_word_count} words long. "
-                    f"{theme_instruction} Fun start, happy ending, no title.")
+    system_message = ("You are a kind storyteller for children aged 3 to 10. "
+                      "Use short sentences and simple, happy words. "
+                      "Never include anything scary, violent, sad or unsafe.")
+    user_message = (f"Write a story for young children, about {target_word_count} words long, "
+                    f"based on this picture: \"{image_caption}\". "
+                    f"Include the things you can see in the picture. "
+                    f"{theme_instruction} "
+                    f"Start in a fun, surprising way and give it a happy ending. Write only the story, with no title.")
     return [{"role": "system", "content": system_message},
             {"role": "user", "content": user_message}]
 
