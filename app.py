@@ -67,7 +67,7 @@ from transformers import StoppingCriteriaList, TextIteratorStreamer, pipeline
 APP_NAME = "TaleTwinkle"
 APP_TAGLINE = "Drop in a picture. Hear a little world come alive."
 
-IMAGE_CAPTION_MODEL_NAME = "Salesforce/blip-image-captioning-base"
+IMAGE_CAPTION_MODEL_NAME = "Salesforce/blip-image-captioning-large"
 STORY_GENERATION_MODEL_NAME = "Qwen/Qwen2.5-0.5B-Instruct"
 LOCAL_SPEECH_MODEL_NAME = "rhasspy/piper-voices"
 DEFAULT_PIPER_MODEL_FILE = "en/en_GB/alba/medium/en_GB-alba-medium.onnx"
