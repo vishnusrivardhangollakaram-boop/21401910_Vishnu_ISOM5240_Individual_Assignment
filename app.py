@@ -196,18 +196,45 @@ def initialise_session_state():
             st.session_state[state_name] = default_value
 
 
+def find_background_file(background_file_name):
+    """
+    Find a theme background picture. Looks in assets/backgrounds first, then in a few other likely
+    folders, and accepts .jpg, .jpeg or .png, so a slightly different upload layout does not break the app.
+
+    Parameters:
+        background_file_name (str): expected file name, e.g. "fairy_tale.jpg".
+    Returns:
+        str or None: full path of the picture, or None if it cannot be found.
+    """
+    app_folder = os.path.dirname(os.path.abspath(__file__))
+    file_stem = os.path.splitext(background_file_name)[0]
+    search_folders = [BACKGROUND_FOLDER, os.path.join(app_folder, "assets"), os.path.join(app_folder, "backgrounds"),
+                      app_folder, os.path.join(app_folder, "test_images")]
+    for search_folder in search_folders:
+        for file_extension in (".jpg", ".jpeg", ".png", ".JPG", ".JPEG", ".PNG"):
+            candidate_path = os.path.join(search_folder, f"{file_stem}{file_extension}")
+            if os.path.isfile(candidate_path):
+                return candidate_path
+    return None
+
+
 @st.cache_data(show_spinner=False)
 def read_background_as_base64(background_file_name):
     """
-    Read a theme background picture and return it as Base64 text for the page CSS.
+    Read a theme background picture and return it as a CSS data URL.
 
     Parameters:
         background_file_name (str): file inside assets/backgrounds.
     Returns:
-        str: Base64-encoded JPEG.
+        str or None: "data:image/...;base64,..." text, or None if the picture is missing
+                     (the page then uses a plain colour gradient instead of crashing).
     """
-    with open(os.path.join(BACKGROUND_FOLDER, background_file_name), "rb") as background_file:
-        return base64.b64encode(background_file.read()).decode("utf-8")
+    background_path = find_background_file(background_file_name=background_file_name)
+    if background_path is None:
+        return None
+    image_type = "png" if background_path.lower().endswith(".png") else "jpeg"
+    with open(background_path, "rb") as background_file:
+        return f"data:image/{image_type};base64,{base64.b64encode(background_file.read()).decode('utf-8')}"
 
 
 def build_floating_emoji_html(floating_emojis):
@@ -240,12 +267,14 @@ def apply_page_style(theme_settings):
         theme_settings (dict): one entry of STORY_THEMES.
     """
     accent_colour = theme_settings["accent_colour"]
-    background_base64 = read_background_as_base64(background_file_name=theme_settings["background_file"])
+    background_data_url = read_background_as_base64(background_file_name=theme_settings["background_file"])
+    background_css = (f'url("{background_data_url}")' if background_data_url
+                      else f"linear-gradient(160deg, #fff6fb 0%, {accent_colour}33 55%, #e8f4ff 100%)")
     page_css = f"""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600;700&display=swap');
     .stApp {{ background-image: linear-gradient(rgba(255,255,255,0.30), rgba(255,255,255,0.45)),
-        url("data:image/jpeg;base64,{background_base64}");
+        {background_css};
         background-size: cover; background-position: center; background-attachment: fixed; }}
     [data-testid="stHeader"] {{ background: transparent; }}
     .block-container, [data-testid="stMainBlockContainer"] {{ position: relative; z-index: 1; max-width: 1280px; padding-top: 1.2rem; }}
